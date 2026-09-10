@@ -201,12 +201,33 @@ if (!assumeYes) {
 
 step(7, "Committing and tagging");
 
-run(NPM, ["version", version, "--no-git-tag-version"]);
+// `npm version <same-version>` exits 1 with "Version not changed", so the bump
+// has to be skipped when the target equals the current version. This is the
+// normal case for a first release, where package.json is already at the version
+// being published.
+if (version === pkg.version) {
+  info(`package.json is already ${version}; skipping the version bump`);
+} else {
+  run(NPM, ["version", version, "--no-git-tag-version"]);
+}
+
 run("git", ["add", "package.json", "package-lock.json", "CHANGELOG.md"]);
-run("git", ["commit", "-m", `chore(release): ${tag}`]);
+
+// With an unchanged version and an already-committed CHANGELOG section there is
+// nothing to record, so tag the current commit instead of failing on an empty
+// commit.
+let createdCommit = false;
+const staged = capture("git", ["diff", "--cached", "--name-only"]);
+if (staged) {
+  run("git", ["commit", "-m", `chore(release): ${tag}`]);
+  createdCommit = true;
+} else {
+  info("no file changes to record; tagging the current commit");
+}
+
 run("git", ["tag", "-a", tag, "-m", tag]);
 const releaseCommit = capture("git", ["rev-parse", "HEAD"]);
-info(`committed ${releaseCommit.slice(0, 7)} and tagged ${tag}`);
+info(`tagged ${tag} at ${releaseCommit.slice(0, 7)}${createdCommit ? " (with a release commit)" : ""}`);
 
 step(8, "Publishing to npm");
 
@@ -220,14 +241,18 @@ try {
 if (!publishedOk) {
   // Keep the repository consistent: if the registry refused the tarball, do not
   // leave a release commit and tag behind that claim a release happened.
-  console.error("\n✗ npm publish failed. Rolling back the local release commit and tag.");
+  console.error("\n✗ npm publish failed. Undoing the local tag" + (createdCommit ? " and release commit" : "") + ".");
   const head = capture("git", ["rev-parse", "HEAD"]);
-  if (head === releaseCommit) {
-    capture("git", ["tag", "-d", tag]);
-    run("git", ["reset", "--hard", "HEAD~1"]);
-    console.error("  Undid the commit and tag. Nothing was pushed, so origin is untouched.");
-  } else {
+  if (head !== releaseCommit) {
     console.error(`  HEAD moved unexpectedly; leaving ${tag} and the commit in place.`);
+  } else {
+    capture("git", ["tag", "-d", tag]);
+    if (createdCommit) {
+      run("git", ["reset", "--hard", "HEAD~1"]);
+      console.error("  Undid the release commit and tag. Nothing was pushed, so origin is untouched.");
+    } else {
+      console.error("  Undid the tag. No release commit had been created, so nothing else changed.");
+    }
   }
   console.error("  Fix the cause (usually authentication), then re-run.");
   process.exit(1);
