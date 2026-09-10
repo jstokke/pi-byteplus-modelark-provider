@@ -160,18 +160,58 @@ The script, in order: verifies the branch is `main` and in sync with
 `origin/main`; verifies the tag and the npm version are both unused; runs
 `test`, `typecheck` and `check:pack`; rehearses the publish; asks you to type
 the version to confirm; bumps via `npm version --no-git-tag-version`, commits
-and tags; publishes; **then** pushes with `--follow-tags`; and creates a GitHub
-release.
+and tags; then publishes.
 
-Publishing last-but-one is intentional. If `npm publish` fails, the script rolls
-back the local commit and tag, so a failed release leaves no tag claiming a
-release that never happened. If publishing succeeds but the push fails, the
-commit and tag are still local and you can just push.
+### How it publishes
+
+There are two modes, and the script picks one automatically. They must not both
+run, because creating the GitHub release is what triggers the workflow: doing
+both would try to publish the same version twice.
+
+- **GitHub Actions** (default, because `.github/workflows/publish.yml` exists).
+  The script pushes the commit and tag, creates the GitHub release, waits for
+  the workflow run, and verifies the version landed. Publishing is done by npm
+  [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so
+  there is no `NPM_TOKEN` anywhere, and a provenance attestation is generated
+  automatically.
+- **Local** (`--local-publish`). `npm publish` runs on your machine, using your
+  `npm login` session. The GitHub release is deliberately **skipped** in this
+  mode so the workflow cannot publish the same version a second time; create it
+  by hand if you want one.
+
+If `npm publish` fails in local mode, the script rolls back the local commit and
+tag, so a failed release leaves no tag claiming a release that never happened.
+
+### Trusted publishing setup (one time, per package)
+
+npm only lets you bind a trusted publisher to a package that already exists, so
+the first version has to go up by hand. `0.1.0` was published locally for that
+reason, before this workflow existed. Afterwards, on
+[npmjs.com](https://www.npmjs.com/package/pi-byteplus-modelark-provider/access)
+→ package → Settings → Trusted Publisher → GitHub Actions:
+
+| Field | Value |
+| :--- | :--- |
+| Organization or user | `jstokke` |
+| Repository | `pi-byteplus-modelark-provider` |
+| Workflow filename | `publish.yml` (the filename only, `.yml` included) |
+| Environment name | leave empty |
+
+All of it is case-sensitive and must match exactly, but npm does **not** validate
+it when you save. A mismatch only shows up as `ENEEDAUTH` / "Unable to
+authenticate" on the next release. The script refuses to publish to a package
+that does not exist yet, and tells you to use `--local-publish` when that is the
+case.
+
+Requirements: npm CLI >= 11.5.1 and Node >= 22.14.0 for the trusted publisher,
+and GitHub-hosted runners (self-hosted are not supported). Provenance is
+generated automatically, so do **not** set `provenance: true` in
+`publishConfig`.
 
 There is no build step, so what you tag is what gets published.
 
-`prepublishOnly` re-runs the gates on any `npm publish`, so a manual publish
-doesn't skip them. It does not run on install.
+`prepublishOnly` re-runs the gates on any `npm publish`, so a publish that skips
+the script still cannot skip them. It does not run on install.
 
 Installs go through Pi's package manager, from npm
 (`pi install npm:pi-byteplus-modelark-provider`) or git
@@ -179,15 +219,5 @@ Installs go through Pi's package manager, from npm
 
 `publishConfig.access` is already `public`, so no flag is needed.
 
-The first `npm publish` has to be manual: npm's
-[trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) needs the
-package to exist before a trusted publisher can be bound to it. Once `0.1.0` is
-on npm, bind the package to this repository and the publish workflow on
-npmjs.com, add `.github/workflows/publish.yml` triggered by
-`release: [published]` with `permissions: { contents: read, id-token: write }`,
-and delete any `NPM_TOKEN` secret. Trusted publishing requires npm CLI >= 11.5.1
-and Node >= 22.14.0, and generates provenance automatically — so do not set
-`provenance: true` in `publishConfig`.
-
-Note that npm sessions now last two hours and 2FA is required to publish, so
-expect a login or a one-time-password prompt during a release.
+Note that npm sessions now last two hours and 2FA is required, so a local
+release (`--local-publish`) will prompt for a login or a one-time password.

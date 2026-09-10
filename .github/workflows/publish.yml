@@ -1,0 +1,51 @@
+name: publish
+
+# Publishes to npm when a GitHub release is created.
+#
+# Uses npm trusted publishing (OIDC), so there is no NPM_TOKEN secret anywhere.
+# npm verifies this workflow's identity directly, and generates a provenance
+# attestation automatically on publish.
+#
+# Setup, once per package (see CONTRIBUTING.md):
+#   1. Publish the first version by hand — npm only lets you configure a trusted
+#      publisher for a package that already exists.
+#   2. On npmjs.com: package -> Settings -> Trusted Publisher -> GitHub Actions.
+#      Enter this filename exactly: publish.yml
+#   3. Cut releases with `npm run release -- <patch|minor|major>`, which creates
+#      the GitHub release this workflow listens for.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # Required for OIDC. Without it, npm gets no identity token.
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # For a release event this checks out the tag, so the tarball matches the
+      # tag exactly.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Trusted publishing requires Node >= 22.14.0 and npm CLI >= 11.5.1.
+          node-version: "24"
+          # npm needs to know which registry it is authenticating against.
+          registry-url: "https://registry.npmjs.org"
+          # Caching is on by default in this action; never cache a release build.
+          package-manager-cache: "false"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No NODE_AUTH_TOKEN: npm authenticates through OIDC instead. Provenance is
+      # also automatic here, so `--provenance` is not passed.
+      #
+      # `prepublishOnly` re-runs the test, typecheck and pack-contents gates as
+      # part of this command, so a broken tarball cannot reach the registry.
+      - name: Publish to npm
+        run: npm publish
