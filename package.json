@@ -48,8 +48,8 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@types/node": "^22.10.0",
-    "typescript": "^5.6.0"
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2"
   },
   "keywords": [
     "pi",

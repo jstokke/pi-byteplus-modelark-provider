@@ -6,11 +6,34 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # Pi's packages must move together, and stay in step with the Pi version
+      # this extension is tested against.
       earendil-works:
         patterns:
           - "@earendil-works/*"
+      # Non-major type-checking updates arrive as a single PR.
+      dev-tooling:
+        patterns:
+          - "typescript"
+          - "@types/*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # @types/node majors track Node major versions (20.x = Node 20,
+      # 26.x = Node 26), not backwards-compatible API growth. They have to match
+      # the `engines` floor in package.json, so a major here would silently let
+      # the type checker accept APIs that do not exist on the oldest supported
+      # Node. Bump it deliberately when that floor moves.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
