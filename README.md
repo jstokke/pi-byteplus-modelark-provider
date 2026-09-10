@@ -181,7 +181,7 @@ their provenance, and the troubleshooting messages are documented in
 git clone https://github.com/jstokke/pi-byteplus-modelark-provider.git
 cd pi-byteplus-modelark-provider
 npm install
-npm test          # 110 unit tests, fully mocked, ~0.6s
+npm test          # 113 unit tests, fully mocked, ~0.6s
 npm run typecheck
 npm run smoke     # parses the live BytePlus docs page
 ```

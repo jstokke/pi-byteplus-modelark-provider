@@ -14,7 +14,7 @@ npm install
 npm test
 ```
 
-110 tests, fully mocked HTTP and filesystem, no live API. `node --test` runs
+113 tests, fully mocked HTTP and filesystem, no live API. `node --test` runs
 them in about 0.6s. `--test-force-exit` in the `test` script is a safety net
 in case a test leaves an unawaited handle; `npm run test:ci` omits it.
 
@@ -24,9 +24,30 @@ in case a test leaves an unawaited handle; `npm run test:ci` omits it.
 npm run typecheck
 ```
 
-`tsc --noEmit` against the `core.d.mts` / `enrich.d.mts` /
-`native-provider.d.mts` declarations. Strict mode is on; please don't turn it
-off.
+`tsc --noEmit`, strict mode, over `src/index.ts` and the three `.d.mts`
+declaration files. Please don't turn strict mode off.
+
+What it does **not** cover is worth understanding, because the JavaScript is not
+what gets checked:
+
+- **The declaration files are not verified.** `skipLibCheck` is on, so TypeScript
+  uses `core.d.mts` as the types for `core.mjs` without checking the contents of
+  the declaration against the implementation. Turning it off is not an option:
+  it reports 44 errors inside `@earendil-works/pi-ai`'s generated declarations,
+  because `module: nodenext` rejects their JSON import attributes.
+- **The `.mjs` modules are not type-checked.** `allowJs`/`checkJs` are off, and
+  the modules carry no JSDoc, so enabling `checkJs` reports 91 errors. Doing this
+  properly is a real piece of work (annotate the `.mjs`, then drop the
+  hand-written declarations), not a config change.
+
+So `npm run typecheck` checks that `src/index.ts` uses the declared interfaces
+correctly. It does not check that the declarations match the implementations.
+`src/declarations.test.mjs` closes the gap that matters most — every declared
+value export must exist at runtime, and every runtime export must be declared —
+but it cannot check argument or return types.
+
+If you change what a `.mjs` module exports, or change a signature, update the
+matching `.d.mts` by hand. Nothing will remind you except that test.
 
 ## Smoke-checking the live docs page
 
@@ -121,24 +142,36 @@ types.
 
 ## Release process
 
-1. Bump `version` in `package.json`.
-2. Move `[Unreleased]` in `CHANGELOG.md` to a dated `[X.Y.Z]` section.
-3. Commit and tag:
+Releases go through one script, which is deliberately paranoid because the only
+irreversible step is `npm publish` — a published `name@version` can never be
+reused, not even after `npm unpublish`.
+
+1. Move the `[Unreleased]` notes in `CHANGELOG.md` under a new
+   `## [X.Y.Z] — YYYY-MM-DD` heading. Don't commit it; the release script
+   includes it in the release commit. It refuses to run without that heading.
+2. Run it, and keep the tree otherwise clean:
    ```bash
-   git commit -am "chore(release): vX.Y.Z"
-   git tag vX.Y.Z
-   git push --follow-tags
+   npm run release -- patch --dry-run   # checks everything, changes nothing
+   npm run release -- patch             # 0.1.0 -> 0.1.1
    ```
-4. Create the GitHub release from the same CHANGELOG section.
-5. Publish to npm from a clean tree:
-   ```bash
-   npm ci
-   npm test
-   npm run typecheck
-   npm publish
-   ```
+   `minor`, `major` and an exact `X.Y.Z` work too.
+
+The script, in order: verifies the branch is `main` and in sync with
+`origin/main`; verifies the tag and the npm version are both unused; runs
+`test`, `typecheck` and `check:pack`; rehearses the publish; asks you to type
+the version to confirm; bumps via `npm version --no-git-tag-version`, commits
+and tags; publishes; **then** pushes with `--follow-tags`; and creates a GitHub
+release.
+
+Publishing last-but-one is intentional. If `npm publish` fails, the script rolls
+back the local commit and tag, so a failed release leaves no tag claiming a
+release that never happened. If publishing succeeds but the push fails, the
+commit and tag are still local and you can just push.
 
 There is no build step, so what you tag is what gets published.
+
+`prepublishOnly` re-runs the gates on any `npm publish`, so a manual publish
+doesn't skip them. It does not run on install.
 
 Installs go through Pi's package manager, from npm
 (`pi install npm:pi-byteplus-modelark-provider`) or git
@@ -155,3 +188,6 @@ npmjs.com, add `.github/workflows/publish.yml` triggered by
 and delete any `NPM_TOKEN` secret. Trusted publishing requires npm CLI >= 11.5.1
 and Node >= 22.14.0, and generates provenance automatically — so do not set
 `provenance: true` in `publishConfig`.
+
+Note that npm sessions now last two hours and 2FA is required to publish, so
+expect a login or a one-time-password prompt during a release.

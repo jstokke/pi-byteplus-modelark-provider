@@ -4,6 +4,29 @@ Notes on what changed. Format loosely follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- `npm run release -- patch|minor|major|X.Y.Z` (`scripts/release.mjs`), which
+  bumps, tags and publishes. It verifies the git state, that the tag and the npm
+  version are both unused, and that the CHANGELOG has a section for the version
+  before touching anything; runs the test, typecheck and pack checks; rehearses
+  the publish; and publishes *before* pushing, rolling the local commit and tag
+  back if the registry rejects the tarball. `--dry-run` runs every check and
+  changes nothing.
+- `src/declarations.test.mjs`, which asserts that every value export declared in
+  the hand-written `.d.mts` files exists at runtime and that every runtime export
+  is declared.
+- `prepublishOnly` re-runs the test, typecheck and pack checks on any
+  `npm publish`, so a manual publish cannot skip them. It does not run on
+  install.
+
+### Fixed
+
+- `CONTRIBUTING.md` claimed `npm run typecheck` checks the `.d.mts` declarations.
+  It does not: `skipLibCheck` means the declaration contents are not verified,
+  and the `.mjs` modules are not type-checked at all. The section now states what
+  is and is not covered, with the measured numbers, and points at the new test.
+
 ### Documentation
 
 - The README now states its requirements (Pi 0.85.x, Node 20+) and both
