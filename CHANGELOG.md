@@ -4,37 +4,6 @@ Notes on what changed. Format loosely follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
-### Added
-
-- `npm run release -- patch|minor|major|X.Y.Z` (`scripts/release.mjs`), which
-  bumps, tags and publishes. It verifies the git state, that the tag and the npm
-  version are both unused, and that the CHANGELOG has a section for the version
-  before touching anything; runs the test, typecheck and pack checks; rehearses
-  the publish; and publishes *before* pushing, rolling the local commit and tag
-  back if the registry rejects the tarball. `--dry-run` runs every check and
-  changes nothing.
-- `src/declarations.test.mjs`, which asserts that every value export declared in
-  the hand-written `.d.mts` files exists at runtime and that every runtime export
-  is declared.
-- `prepublishOnly` re-runs the test, typecheck and pack checks on any
-  `npm publish`, so a manual publish cannot skip them. It does not run on
-  install.
-
-### Fixed
-
-- `CONTRIBUTING.md` claimed `npm run typecheck` checks the `.d.mts` declarations.
-  It does not: `skipLibCheck` means the declaration contents are not verified,
-  and the `.mjs` modules are not type-checked at all. The section now states what
-  is and is not covered, with the measured numbers, and points at the new test.
-
-### Documentation
-
-- The README now states its requirements (Pi 0.85.x, Node 20+) and both
-  install paths (npm and git).
-- Publishing and release steps now live in `CONTRIBUTING.md`; `PUBLISHING.md`
-  was removed so the repository only documents what users and contributors
-  need.
-
 ## [0.1.0] — 2026-09-10
 
 First release. A Pi extension for the BytePlus ModelArk **Coding Plan**,
@@ -72,7 +41,40 @@ hand-maintained model list and required an exported environment variable).
   `BYTEPLUS_NO_ENRICHMENT`, `BYTEPLUS_DEFAULT_MAX_TOKENS`.
 - `npm run smoke` (`scripts/check-plan-docs.mjs`), which parses the live
   BytePlus docs page and reports drift between it and the curated hints.
-- 110 unit tests with fully mocked HTTP, filesystem and Pi runtime, including
+- `npm run check:pack` (`scripts/check-pack-contents.mjs`), which asserts what
+  `npm publish` would upload. It runs in CI, so a change to `files` fails the
+  build instead of shipping something unintended.
+- `npm run release -- patch|minor|major|X.Y.Z` (`scripts/release.mjs`), which
+  bumps, tags and publishes. It verifies the git state, that the tag and the npm
+  version are both unused, and that this file has a section for the version
+  before touching anything; runs the test, typecheck and pack checks; rehearses
+  the publish; and publishes *before* pushing, rolling the local commit and tag
+  back if the registry rejects the tarball. `--dry-run` runs every check and
+  changes nothing.
+- `prepublishOnly` re-runs the test, typecheck and pack checks on any
+  `npm publish`, so a manual publish cannot skip them. It does not run on
+  install.
+- 113 unit tests with fully mocked HTTP, filesystem and Pi runtime, including
   a secret-hygiene test asserting the API key never appears in an error path
-  or log line.
-- CI across Node 20, 22 and 24.
+  or log line, and `src/declarations.test.mjs`, which asserts that every value
+  export declared in the hand-written `.d.mts` files exists at runtime and that
+  every runtime export is declared.
+- GitHub Actions CI across Node 20, 22 and 24, plus Dependabot configuration.
+
+### Fixed
+
+- `CONTRIBUTING.md` claimed `npm run typecheck` checks the `.d.mts`
+  declarations. It does not: `skipLibCheck` means the declaration contents are
+  not verified, and the `.mjs` modules are not type-checked at all. The section
+  now states what is and is not covered, with the measured numbers, and points
+  at the declaration test.
+
+### Documentation
+
+- The README states its requirements (Pi 0.85.x, Node 20+), makes npm the
+  primary install path with a pinned-tag git alternative, and carries a
+  trademark and non-affiliation disclaimer.
+- `SECURITY.md`, a pull request template, and an `.github/ISSUE_TEMPLATE` pair
+  covering the diagnostics worth collecting in a bug report.
+- Publishing and release steps live in `CONTRIBUTING.md`; `PUBLISHING.md` was
+  removed so the repository only documents what users and contributors need.
