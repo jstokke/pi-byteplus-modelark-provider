@@ -14,7 +14,7 @@ npm install
 npm test
 ```
 
-109 tests, fully mocked HTTP and filesystem, no live API. `node --test` runs
+110 tests, fully mocked HTTP and filesystem, no live API. `node --test` runs
 them in about 0.6s. `--test-force-exit` in the `test` script is a safety net
 in case a test leaves an unawaited handle; `npm run test:ci` omits it.
 
@@ -119,11 +119,39 @@ types.
      provider id, model ids)
 4. CI must pass on Node 20, 22 and 24.
 
-## Release process (for me)
+## Release process
 
 1. Bump `version` in `package.json`.
 2. Move `[Unreleased]` in `CHANGELOG.md` to a dated `[X.Y.Z]` section.
-3. Tag and push.
+3. Commit and tag:
+   ```bash
+   git commit -am "chore(release): vX.Y.Z"
+   git tag vX.Y.Z
+   git push --follow-tags
+   ```
+4. Create the GitHub release from the same CHANGELOG section.
+5. Publish to npm from a clean tree:
+   ```bash
+   npm ci
+   npm test
+   npm run typecheck
+   npm publish
+   ```
 
-There is no build step. Installs go through Pi's package manager
-(`pi install git:github.com/jstokke/pi-byteplus-modelark-provider`) or npm.
+There is no build step, so what you tag is what gets published.
+
+Installs go through Pi's package manager, from npm
+(`pi install npm:pi-byteplus-modelark-provider`) or git
+(`pi install git:github.com/jstokke/pi-byteplus-modelark-provider`).
+
+`publishConfig.access` is already `public`, so no flag is needed.
+
+The first `npm publish` has to be manual: npm's
+[trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC) needs the
+package to exist before a trusted publisher can be bound to it. Once `0.1.0` is
+on npm, bind the package to this repository and the publish workflow on
+npmjs.com, add `.github/workflows/publish.yml` triggered by
+`release: [published]` with `permissions: { contents: read, id-token: write }`,
+and delete any `NPM_TOKEN` secret. Trusted publishing requires npm CLI >= 11.5.1
+and Node >= 22.14.0, and generates provenance automatically — so do not set
+`provenance: true` in `publishConfig`.

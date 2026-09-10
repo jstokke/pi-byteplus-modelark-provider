@@ -1,5 +1,9 @@
 # pi-byteplus-modelark-provider
 
+[![test](https://github.com/jstokke/pi-byteplus-modelark-provider/actions/workflows/test.yml/badge.svg)](https://github.com/jstokke/pi-byteplus-modelark-provider/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/pi-byteplus-modelark-provider.svg)](https://www.npmjs.com/package/pi-byteplus-modelark-provider)
+[![license](https://img.shields.io/npm/l/pi-byteplus-modelark-provider.svg)](LICENSE)
+
 A Pi extension that registers your **BytePlus ModelArk Coding Plan**
 subscription as a model provider in [Pi](https://github.com/earendil-works/pi-coding-agent).
 
@@ -18,18 +22,35 @@ this is the same idea with two changes you might care about:
 
 ---
 
+## Requirements
+
+- Pi **0.85.x** or newer.
+- Node **20** or newer (what Pi itself requires).
+- A BytePlus ModelArk **Coding Plan** subscription. The Coding Plan endpoint
+  rejects a pay-as-you-go-only key.
+
+---
+
 ## Quickstart
 
 ### 1. Install
 
+From npm:
+
 ```bash
-pi install git:github.com/jstokke/pi-byteplus-modelark-provider
+pi install npm:pi-byteplus-modelark-provider
+```
+
+Or straight from git, pinned to a tag:
+
+```bash
+pi install git:github.com/jstokke/pi-byteplus-modelark-provider@v0.1.0
 ```
 
 Or over HTTPS:
 
 ```bash
-pi install https://github.com/jstokke/pi-byteplus-modelark-provider
+pi install https://github.com/jstokke/pi-byteplus-modelark-provider@v0.1.0
 ```
 
 Already have the old `pi-byteplus-modelark` installed? Remove it first —
@@ -90,8 +111,9 @@ or `byteplus/ark-code-latest` for the plan's auto-router.
 ### Managing it
 
 ```bash
-pi update --extensions                                      # update
-pi remove git:github.com/jstokke/pi-byteplus-modelark-provider   # uninstall
+pi update --extensions   # update, whichever source you installed from
+pi remove npm:pi-byteplus-modelark-provider
+pi remove git:github.com/jstokke/pi-byteplus-modelark-provider
 ```
 
 ---
@@ -135,8 +157,9 @@ their provenance, and the troubleshooting messages are documented in
 
 ## Notes and limitations
 
-- Built and tested against Pi **0.85.x**. The extension declares
-  `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` as peers.
+- Built and tested against Pi **0.85.x**. `@earendil-works/pi-coding-agent`
+  and `@earendil-works/pi-ai` are optional peer dependencies: Pi provides both
+  at runtime, and the extension installs no runtime dependencies of its own.
 - I only have a Coding Plan subscription, so that is the only tier this has
   been exercised against. A pay-as-you-go-only key will be rejected by the
   Coding Plan endpoint — that is BytePlus' behaviour, not the extension's.
@@ -146,6 +169,9 @@ their provenance, and the troubleshooting messages are documented in
 - Only the OpenAI-compatible wire is registered. The plan also exposes an
   Anthropic-protocol endpoint, but it serves the same models, so registering
   it would just duplicate every entry in the picker.
+- The model list is parsed out of a public BytePlus documentation page, and
+  the Coding Plan endpoint is undocumented. Either can change without notice;
+  `npm run smoke` is what reports drift.
 
 ---
 
@@ -155,7 +181,7 @@ their provenance, and the troubleshooting messages are documented in
 git clone https://github.com/jstokke/pi-byteplus-modelark-provider.git
 cd pi-byteplus-modelark-provider
 npm install
-npm test          # 109 unit tests, fully mocked, ~0.6s
+npm test          # 110 unit tests, fully mocked, ~0.6s
 npm run typecheck
 npm run smoke     # parses the live BytePlus docs page
 ```
@@ -170,6 +196,19 @@ ln -s "$(pwd)/src" ~/.pi/agent/extensions/byteplus
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the project layout and the
 conventions this repo cares about.
+
+---
+
+## Disclaimer
+
+Not affiliated with, endorsed by, or sponsored by BytePlus, ByteDance or Zhipu
+AI. "BytePlus", "ModelArk", "Seed", "GLM", "Kimi", "DeepSeek" and "GPT-OSS" are
+trademarks of their respective owners, used here only to describe what this
+extension interoperates with.
+
+The extension targets an undocumented Coding Plan endpoint and parses a public
+BytePlus documentation page to discover models. Check that this fits BytePlus'
+terms for your own use.
 
 ---
 

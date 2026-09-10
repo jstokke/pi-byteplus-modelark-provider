@@ -4,6 +4,14 @@ Notes on what changed. Format loosely follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Documentation
+
+- The README now states its requirements (Pi 0.85.x, Node 20+) and both
+  install paths (npm and git).
+- Publishing and release steps now live in `CONTRIBUTING.md`; `PUBLISHING.md`
+  was removed so the repository only documents what users and contributors
+  need.
+
 ## [0.1.0] — 2026-09-10
 
 First release. A Pi extension for the BytePlus ModelArk **Coding Plan**,
@@ -41,7 +49,7 @@ hand-maintained model list and required an exported environment variable).
   `BYTEPLUS_NO_ENRICHMENT`, `BYTEPLUS_DEFAULT_MAX_TOKENS`.
 - `npm run smoke` (`scripts/check-plan-docs.mjs`), which parses the live
   BytePlus docs page and reports drift between it and the curated hints.
-- 109 unit tests with fully mocked HTTP, filesystem and Pi runtime, including
+- 110 unit tests with fully mocked HTTP, filesystem and Pi runtime, including
   a secret-hygiene test asserting the API key never appears in an error path
   or log line.
 - CI across Node 20, 22 and 24.
