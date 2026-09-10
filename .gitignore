@@ -1,0 +1,26 @@
+# Dependencies (the project ships no runtime deps; @types/node and the
+# @earendil-works/* packages are devDeps for type-checking and local tests
+# only — Pi provides them at runtime).
+node_modules/
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# AI session logs
+.ai_logs/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Build output (none right now, but future-proof)
+dist/
+*.tsbuildinfo
+
+# Local scratch
+*.local.json

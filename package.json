@@ -1,0 +1,58 @@
+{
+  "name": "pi-byteplus-modelark-provider",
+  "version": "0.1.0",
+  "description": "Pi extension that exposes a BytePlus ModelArk Coding Plan subscription as a Pi provider (OpenAI Chat Completions wire). Discovers the plan's live model catalog, ships reasoning-effort support, and signs in through Pi's own /login flow instead of a hand-exported env var.",
+  "license": "MIT",
+  "author": "Joachim Stokke",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jstokke/pi-byteplus-modelark-provider.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jstokke/pi-byteplus-modelark-provider/issues"
+  },
+  "homepage": "https://github.com/jstokke/pi-byteplus-modelark-provider#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test --test-timeout=8000 --test-force-exit src/core.test.mjs src/enrich.test.mjs src/native-provider.test.mjs",
+    "test:ci": "node --test --test-timeout=8000 src/core.test.mjs src/enrich.test.mjs src/native-provider.test.mjs",
+    "smoke": "node scripts/check-plan-docs.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "byteplus",
+    "modelark",
+    "coding-plan",
+    "ark",
+    "ai-provider",
+    "llm",
+    "coding-agent"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
