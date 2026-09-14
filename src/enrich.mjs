@@ -269,19 +269,44 @@ export function loadPlanCache({ cachePath = defaultCachePath(), now = Date.now()
       (entry) => entry && typeof entry === "object" && typeof entry.id === "string" && entry.id !== ""
     );
     if (models.length === 0) return null;
-    return { models, fetchedAt: data.fetchedAt, stale: now - data.fetchedAt > ttlMs };
+    const verifiedModels = Array.isArray(data.verifiedModels)
+      ? data.verifiedModels.filter((id) => typeof id === "string" && id !== "")
+      : undefined;
+    const unsupportedModels = Array.isArray(data.unsupportedModels)
+      ? data.unsupportedModels.filter((id) => typeof id === "string" && id !== "")
+      : undefined;
+    return {
+      models,
+      fetchedAt: data.fetchedAt,
+      stale: now - data.fetchedAt > ttlMs,
+      ...(verifiedModels ? { verifiedModels } : {}),
+      ...(unsupportedModels ? { unsupportedModels } : {}),
+    };
   } catch {
     return null;
   }
 }
 
 /** Persist the scraped model list; failures are silently non-fatal. */
-export function savePlanCache(models, { cachePath = defaultCachePath(), now = Date.now(), source } = {}) {
+export function savePlanCache(
+  models,
+  { cachePath = defaultCachePath(), now = Date.now(), source, verifiedModels, unsupportedModels } = {}
+) {
   try {
     mkdirSync(join(cachePath, ".."), { recursive: true });
     writeFileSync(
       cachePath,
-      JSON.stringify({ fetchedAt: now, source: source ?? getPlanDocUrl(), models }, null, 2)
+      JSON.stringify(
+        {
+          fetchedAt: now,
+          source: source ?? getPlanDocUrl(),
+          models,
+          ...(Array.isArray(verifiedModels) ? { verifiedModels } : {}),
+          ...(Array.isArray(unsupportedModels) ? { unsupportedModels } : {}),
+        },
+        null,
+        2
+      )
     );
   } catch {
     // Cache write failure must never break provider registration.

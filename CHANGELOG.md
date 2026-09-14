@@ -4,6 +4,40 @@ Notes on what changed. Format loosely follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- Automatic dynamic discovery and live probing of new models whenever an API
+  key is set. The extension queries the live `/models` catalog and probes any
+  chat-capable models not documented in the docs list against
+  `chat/completions`: models BytePlus enables plan-side (returning 200) are
+  dynamically added to the published catalog and cached, keeping the catalog
+  current without waiting for new extension releases or docs updates.
+- `probeModelSupport` utility to verify Coding Plan endpoint model routing.
+- `deepseek-v4-flash-ga` and `deepseek-v4-pro-ga` to the curated hints and
+  the seed catalog. BytePlus added the GA successors of the V4 pair to the
+  plan without updating the docs "supported models" list; both ids were
+  verified against the Coding Plan endpoint (200 on `chat/completions`, while
+  platform-active but non-plan models answer `404 UnsupportedModel`).
+
+### Fixed
+
+- The live `/models` metadata enrichment never worked: the parser read flat
+  `context_length`/`max_tokens` fields, but BytePlus' actual payload nests
+  limits under `token_limits` and input modalities under
+  `modalities.input_modalities`. Both shapes are now parsed, plus `status`.
+- Plan aliases could not match the catalog's versioned platform ids
+  (`glm-5.2` vs `glm-5-2-260617`), so live metadata never merged onto plan
+  models. Matching now normalizes both sides (dots → hyphens, trailing
+  date-like version suffix dropped); ids themselves are still never
+  substituted, and live ids still never enter a successful plan list.
+- Curated limits corrected against BytePlus' Subscription overview and the
+  live catalog: `glm-5.2` context window 200 000 → 1 048 576 (the old value
+  compacted far too early), `kimi-k2.5` output cap 65 536 → 32 768 (the docs
+  cap includes the chain of thought; the old value risked rejection), and
+  `bytedance-seed-code` now declared vision-capable.
+- The live-catalog fallback no longer offers models BytePlus has marked
+  `Shutdown` or `Retiring`.
+
 ## [0.1.0] — 2026-09-10
 
 First release. A Pi extension for the BytePlus ModelArk **Coding Plan**,

@@ -21,12 +21,16 @@
 import { stream as compatStream, streamSimple as compatStreamSimple } from "@earendil-works/pi-ai/compat";
 
 import {
+  EXTRA_PLAN_MODELS,
   MODEL_HINTS,
   OPENAI_BASE_URL,
   PROVIDER_ID,
   buildCatalog,
   fetchCatalog as defaultFetchCatalog,
+  isUsableLiveModel,
   loadModelOverrides as defaultLoadModelOverrides,
+  normalizeModelId,
+  probeModelSupport as defaultProbeModelSupport,
   readStoredApiKey,
   toPiModels,
   validateApiKey as defaultValidateApiKey,
@@ -101,6 +105,7 @@ export function createBytePlusProvider(options = {}) {
     savePlanCacheFn = defaultSavePlanCache,
     loadModelOverridesFn = defaultLoadModelOverrides,
     validateApiKeyFn = defaultValidateApiKey,
+    probeModelSupportFn = defaultProbeModelSupport,
     readStoredApiKeyFn = readStoredApiKey,
     extraHeaders,
     env = process.env,
@@ -239,10 +244,11 @@ export function createBytePlusProvider(options = {}) {
       if (context.signal.aborted) return;
 
       let planModels = cached?.models;
+      let newlyScraped = false;
       const scraped = planResult.status === "fulfilled" ? planResult.value : undefined;
       if (scraped && scraped.length > 0) {
         planModels = scraped;
-        if (needPlanFetch) savePlanCacheFn(scraped, { source: planDocUrl });
+        if (needPlanFetch) newlyScraped = true;
       } else if (planResult.status === "rejected" && needPlanFetch) {
         const reason = planResult.reason instanceof Error ? planResult.reason.message : String(planResult.reason);
         const fallback =
@@ -261,7 +267,95 @@ export function createBytePlusProvider(options = {}) {
         console.error(`${reason} (using the bundled model list)`);
       }
 
-      const catalog = buildCatalog({ planModels, liveModels });
+      // Dynamic discovery: whenever an API key is set and liveModels responds,
+      // probe any chat-capable platform models that the plan docs don't list.
+      // Verified models are cached alongside the plan list so subsequent
+      // refreshes within the TTL window stay fast and zero-probe.
+      const verifiedCache = new Set(cached?.verifiedModels ?? []);
+      const unsupportedCache = new Set(cached?.unsupportedModels ?? []);
+      const verifiedLiveModels = [];
+      let cacheUpdated = false;
+
+      if (Array.isArray(liveModels) && liveModels.length > 0) {
+        const usableLive = liveModels.filter(isUsableLiveModel);
+        const knownIds = new Set();
+        for (const entry of planModels ?? []) {
+          knownIds.add(entry.id.toLowerCase());
+          knownIds.add(normalizeModelId(entry.id));
+        }
+        for (const id of EXTRA_PLAN_MODELS) {
+          knownIds.add(id.toLowerCase());
+          knownIds.add(normalizeModelId(id));
+        }
+
+        const candidates = [];
+        for (const entry of usableLive) {
+          const entryId = entry.id.toLowerCase();
+          const normId = normalizeModelId(entry.id);
+          const alias = typeof entry.name === "string" && entry.name !== "" ? entry.name.toLowerCase() : undefined;
+          const normAlias = alias ? normalizeModelId(alias) : undefined;
+
+          if (
+            knownIds.has(entryId) ||
+            knownIds.has(normId) ||
+            (alias && knownIds.has(alias)) ||
+            (normAlias && knownIds.has(normAlias))
+          ) {
+            continue;
+          }
+
+          const candidateId = alias && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(alias) ? entry.name : entry.id;
+
+          if (verifiedCache.has(candidateId)) {
+            verifiedLiveModels.push({ ...entry, id: candidateId });
+            continue;
+          }
+          if (unsupportedCache.has(candidateId)) {
+            continue;
+          }
+
+          candidates.push({ candidateId, entry });
+        }
+
+        const probeDisabled = env.BYTEPLUS_NO_PROBE === "1";
+        if (candidates.length > 0 && !probeDisabled && !context.signal.aborted) {
+          const probeResults = await Promise.allSettled(
+            candidates.map(async ({ candidateId, entry }) => {
+              const supported = await probeModelSupportFn({
+                apiKey,
+                modelId: candidateId,
+                baseUrl: normalizedBaseUrl,
+                signal: context.signal,
+              });
+              return { candidateId, entry, supported };
+            })
+          );
+
+          for (const result of probeResults) {
+            if (result.status === "fulfilled") {
+              const { candidateId, entry, supported } = result.value;
+              if (supported) {
+                verifiedCache.add(candidateId);
+                verifiedLiveModels.push({ ...entry, id: candidateId });
+                cacheUpdated = true;
+              } else {
+                unsupportedCache.add(candidateId);
+                cacheUpdated = true;
+              }
+            }
+          }
+        }
+      }
+
+      if ((newlyScraped || cacheUpdated) && planModels && planModels.length > 0) {
+        savePlanCacheFn(planModels, {
+          source: planDocUrl,
+          verifiedModels: [...verifiedCache],
+          unsupportedModels: [...unsupportedCache],
+        });
+      }
+
+      const catalog = buildCatalog({ planModels, liveModels, verifiedLiveModels });
       const filtered = toPiModels(catalog, modelOverrides, undefined, modelMeta);
 
       // publish() can return false when the update was cancelled; only

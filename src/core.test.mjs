@@ -32,9 +32,12 @@ import {
   getModelHint,
   inferThinking,
   isChatModel,
+  isUsableLiveModel,
   loadModelOverrides,
+  normalizeModelId,
   normalizeName,
   parseCatalog,
+  probeModelSupport,
   readStoredApiKey,
   resolveApiKey,
   toPiModel,
@@ -285,6 +288,62 @@ test("parseCatalog normalizes a well-formed payload", () => {
   assert.equal(models[2].maxTokens, undefined);
 });
 
+test("parseCatalog reads BytePlus' live token_limits/modalities/status shape", () => {
+  const models = parseCatalog({
+    data: [
+      {
+        id: "glm-5-2-260617",
+        name: "glm-5.2",
+        status: "Active",
+        modalities: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+        token_limits: {
+          context_window: 1048576,
+          max_input_token_length: 1048576,
+          max_output_token_length: 131072,
+          max_reasoning_token_length: 131072,
+        },
+      },
+      {
+        id: "seedream-4-0-250828",
+        domain: "ImageGeneration",
+        task_type: ["TextToImage"],
+        token_limits: {},
+      },
+    ],
+  });
+  assert.deepEqual(models[0], {
+    id: "glm-5-2-260617",
+    name: "glm-5.2",
+    contextLength: 1048576,
+    maxTokens: 131072,
+    vision: true,
+    reasoning: true,
+    status: "active",
+  });
+  // No image input, no reasoning budget, no status → fields omitted.
+  assert.deepEqual(models[1], { id: "seedream-4-0-250828", name: undefined });
+});
+
+test("normalizeModelId maps plan aliases onto versioned platform ids", () => {
+  assert.equal(normalizeModelId("glm-5.2"), "glm-5-2");
+  assert.equal(normalizeModelId("glm-5-2-260617"), "glm-5-2");
+  assert.equal(normalizeModelId("deepseek-v4-flash"), "deepseek-v4-flash");
+  assert.equal(normalizeModelId("deepseek-v4-flash-260425"), "deepseek-v4-flash");
+  assert.equal(normalizeModelId("deepseek-v4-flash-ga-260731"), "deepseek-v4-flash-ga");
+  // The 'b' in 120b is not a version suffix; the date suffix is.
+  assert.equal(normalizeModelId("gpt-oss-120b-250805"), "gpt-oss-120b");
+  assert.equal(normalizeModelId(undefined), "");
+});
+
+test("isUsableLiveModel drops non-chat and retired entries, keeps unknown status", () => {
+  assert.equal(isUsableLiveModel({ id: "glm-5-2-260617", status: "active" }), true);
+  assert.equal(isUsableLiveModel({ id: "glm-5-2-260617" }), true, "no status field passes (fixtures)");
+  assert.equal(isUsableLiveModel({ id: "deepseek-r1-250120", status: "Shutdown" }), false);
+  assert.equal(isUsableLiveModel({ id: "skylark-pro", status: "Retiring" }), false);
+  assert.equal(isUsableLiveModel({ id: "doubao-embedding-large", status: "active" }), false);
+  assert.equal(isUsableLiveModel(null), false);
+});
+
 test("parseCatalog rejects malformed payloads", () => {
   const cases = [
     [null, /not a JSON object/],
@@ -432,6 +491,50 @@ test("validateApiKey rejects an empty key without calling the network", async ()
   assert.equal(called, false);
 });
 
+// ─── probeModelSupport ───────────────────────────────────────────────────────
+
+test("probeModelSupport returns true when chat/completions answers 200", async () => {
+  const supported = await probeModelSupport({
+    apiKey: SECRET,
+    modelId: "glm-5.3-flash",
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "https://ark.ap-southeast.bytepluses.com/api/coding/v3/chat/completions");
+      assert.equal(init.method, "POST");
+      assert.equal(init.headers.Authorization, `Bearer ${SECRET}`);
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, "glm-5.3-flash");
+      assert.equal(body.max_tokens, 1);
+      return jsonResponse(200, { choices: [{ message: { content: "pong" } }] });
+    },
+  });
+  assert.equal(supported, true);
+});
+
+test("probeModelSupport returns false when endpoint returns 404 UnsupportedModel", async () => {
+  const supported = await probeModelSupport({
+    apiKey: SECRET,
+    modelId: "unsupported-platform-model",
+    fetchImpl: async () =>
+      jsonResponse(404, {
+        error: { code: "UnsupportedModel", message: "the requested model does not support the coding plan feature" },
+      }),
+  });
+  assert.equal(supported, false);
+});
+
+test("probeModelSupport returns false on network error or empty args", async () => {
+  assert.equal(await probeModelSupport({ apiKey: "", modelId: "test" }), false);
+  assert.equal(await probeModelSupport({ apiKey: SECRET, modelId: "" }), false);
+  const errorSupported = await probeModelSupport({
+    apiKey: SECRET,
+    modelId: "test",
+    fetchImpl: async () => {
+      throw new Error("connection reset");
+    },
+  });
+  assert.equal(errorSupported, false);
+});
+
 // ─── capability hints ────────────────────────────────────────────────────────
 
 test("isChatModel excludes ModelArk's non-chat catalog entries", () => {
@@ -492,7 +595,7 @@ test("toPiModel applies the documented compat block", () => {
 
 test("toPiModel prefers curated values over the platform catalog", () => {
   const model = toPiModel({ id: "glm-5.2", contextLength: 999999, maxTokens: 5 });
-  assert.equal(model.contextWindow, 200000);
+  assert.equal(model.contextWindow, 1048576);
   assert.equal(model.maxTokens, 131072);
 });
 
@@ -520,6 +623,16 @@ test("toPiModel sets vision only where the catalog supports image input", () => 
   assert.deepEqual(toPiModel({ id: "gpt-oss-120b" }).input, ["text"]);
 });
 
+test("toPiModel prefers curated vision capability over conflicting platform catalog metadata", () => {
+  // bytedance-seed-code is curated as vision: true. Curated hint wins over live false.
+  assert.deepEqual(toPiModel({ id: "bytedance-seed-code", vision: false }).input, ["text", "image"]);
+  // deepseek-v4-pro is curated as vision: false. Curated hint wins over live true.
+  assert.deepEqual(toPiModel({ id: "deepseek-v4-pro", vision: true }).input, ["text"]);
+  // Uncurated models use live catalog metadata.
+  assert.deepEqual(toPiModel({ id: "new-uncurated", vision: true }).input, ["text", "image"]);
+  assert.deepEqual(toPiModel({ id: "new-uncurated", vision: false }).input, ["text"]);
+});
+
 test("toPiModel marks curated families as reasoning and exposes their thinking map", () => {
   const glm = toPiModel({ id: "glm-5.2" });
   assert.equal(glm.reasoning, true);
@@ -530,15 +643,15 @@ test("toPiModel marks curated families as reasoning and exposes their thinking m
 });
 
 test("toPiModel lets overrides raise but never lower the caps", () => {
-  const raise = new Map([["glm-5.2", { maxTokens: 250000, contextWindow: 400000 }]]);
+  const raise = new Map([["glm-5.2", { maxTokens: 250000, contextWindow: 2000000 }]]);
   const raised = toPiModel({ id: "glm-5.2" }, raise);
   assert.equal(raised.maxTokens, 250000);
-  assert.equal(raised.contextWindow, 400000);
+  assert.equal(raised.contextWindow, 2000000);
 
   const lower = new Map([["glm-5.2", { maxTokens: 100, contextWindow: 100 }]]);
   const kept = toPiModel({ id: "glm-5.2" }, lower);
   assert.equal(kept.maxTokens, 131072);
-  assert.equal(kept.contextWindow, 200000);
+  assert.equal(kept.contextWindow, 1048576);
 });
 
 test("toPiModel matches overrides by normalized display name too", () => {
@@ -573,22 +686,26 @@ test("buildCatalog prefers the plan list and enriches it from the live catalog",
       { id: "not-on-plan" },
     ],
   });
-  assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2", "new-model", "ark-code-latest"]);
-  assert.equal(catalog[0].name, "GLM 5.2");
+  assert.deepEqual(catalog.map((m) => m.id), [
+    "glm-5.2",
+    "new-model",
+    ...EXTRA_PLAN_MODELS,
+  ]);
+  assert.equal(catalog[0].name, "GLM-5.2", "curated name beats the catalog's display name");
   assert.equal(catalog[0].contextLength, 200000);
   assert.equal(catalog[1].contextLength, undefined);
   assert.ok(!catalog.some((m) => m.id === "not-on-plan"), "live-only ids must not enter a successful plan list");
 });
 
-test("buildCatalog appends the ids BytePlus documents outside the list", () => {
+test("buildCatalog appends the extra ids and de-duplicates them", () => {
   const catalog = buildCatalog({ planModels: [{ id: "glm-5.2" }] });
-  assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2", "ark-code-latest"]);
+  assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2", ...EXTRA_PLAN_MODELS]);
 });
 
 test("buildCatalog does not duplicate a model that is in both sources", () => {
   for (const id of EXTRA_PLAN_MODELS) {
     const catalog = buildCatalog({ planModels: [{ id }, { id: "glm-5.2" }] });
-    assert.deepEqual(catalog.map((m) => m.id), [id, "glm-5.2"]);
+    assert.deepEqual(catalog.map((m) => m.id), [id, "glm-5.2", ...EXTRA_PLAN_MODELS.filter((e) => e !== id)]);
   }
 });
 
@@ -597,16 +714,71 @@ test("buildCatalog does not append extras to the live-fallback path", () => {
   assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2"]);
 });
 
-test("buildCatalog falls back to the live catalog, filtered to chat models", () => {
+test("buildCatalog appends verifiedLiveModels and enriches them from the live catalog", () => {
+  const catalog = buildCatalog({
+    planModels: [{ id: "glm-5.2" }],
+    verifiedLiveModels: [{ id: "glm-5.3-flash" }, { id: "glm-5.2" }],
+    liveModels: [
+      { id: "glm-5.3-flash", name: "GLM 5.3 Flash", contextLength: 128000, maxTokens: 8192, vision: true },
+      { id: "glm-5.2", contextLength: 200000 },
+      { id: "unverified-live" },
+    ],
+  });
+
+  assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2", ...EXTRA_PLAN_MODELS, "glm-5.3-flash"]);
+  const verifiedEntry = catalog.find((m) => m.id === "glm-5.3-flash");
+  assert.equal(verifiedEntry.contextLength, 128000);
+  assert.equal(verifiedEntry.maxTokens, 8192);
+  assert.equal(verifiedEntry.vision, true);
+  assert.ok(!catalog.some((m) => m.id === "unverified-live"));
+});
+
+test("buildCatalog supports verifiedLiveModels when planModels is empty", () => {
+  const catalog = buildCatalog({
+    planModels: [],
+    verifiedLiveModels: [{ id: "custom-live-model" }],
+    liveModels: [{ id: "custom-live-model", contextLength: 64000 }],
+  });
+
+  assert.deepEqual(catalog.map((m) => m.id), [...EXTRA_PLAN_MODELS, "custom-live-model"]);
+  const custom = catalog.find((m) => m.id === "custom-live-model");
+  assert.equal(custom.contextLength, 64000);
+});
+
+test("buildCatalog enriches plan aliases from versioned platform ids", () => {
+  const catalog = buildCatalog({
+    planModels: [{ id: "glm-5.2" }, { id: "kimi-k2.5" }],
+    liveModels: [
+      {
+        id: "glm-5-2-260617",
+        name: "glm-5.2",
+        status: "active",
+        contextLength: 1048576,
+      },
+      { id: "kimi-k2-250905", status: "Shutdown" },
+    ],
+  });
+  // `glm-5.2` matches `glm-5-2-260617` after normalization.
+  assert.equal(catalog[0].id, "glm-5.2");
+  assert.equal(catalog[0].contextLength, 1048576);
+  assert.equal(catalog[0].name, "GLM-5.2", "curated name still wins over the live catalog's");
+  // A Shutdown platform twin supplies no metadata.
+  assert.equal(catalog[1].contextLength, undefined);
+  // Live ids still never enter a successful plan list.
+  assert.ok(!catalog.some((m) => m.id === "glm-5-2-260617"));
+});
+
+test("buildCatalog falls back to the live catalog, filtered to usable chat models", () => {
   const catalog = buildCatalog({
     planModels: [],
     liveModels: [
-      { id: "glm-5.2" },
+      { id: "glm-5-2-260617", status: "active" },
+      { id: "deepseek-r1-250120", status: "Shutdown" },
       { id: "doubao-embedding-large" },
       { id: "dola-seedance-2-0" },
     ],
   });
-  assert.deepEqual(catalog.map((m) => m.id), ["glm-5.2"]);
+  assert.deepEqual(catalog.map((m) => m.id), ["glm-5-2-260617"]);
 });
 
 test("buildCatalog falls back to the bundled seed list when everything else fails", () => {
@@ -620,6 +792,17 @@ test("buildCatalog falls back to the bundled seed list when everything else fail
 test("buildCatalog tolerates null/undefined sources", () => {
   assert.deepEqual(buildCatalog({ planModels: null, liveModels: undefined }).length, SEED_CATALOG.length);
   assert.deepEqual(buildCatalog().length, SEED_CATALOG.length);
+});
+
+test("the curated hints cover the plan-verified GA variants", () => {
+  for (const id of ["deepseek-v4-flash-ga", "deepseek-v4-pro-ga"]) {
+    assert.ok(Object.hasOwn(MODEL_HINTS, id), id);
+    const model = toPiModel({ id });
+    assert.equal(model.contextWindow, 1048576);
+    assert.equal(model.maxTokens, 131072);
+    assert.equal(model.reasoning, true);
+    assert.equal(model.input.includes("image"), false);
+  }
 });
 
 // ─── secret hygiene ──────────────────────────────────────────────────────────

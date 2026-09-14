@@ -14,6 +14,8 @@ export interface PlanCache {
   models: PlanModel[];
   fetchedAt: number;
   stale: boolean;
+  verifiedModels?: string[];
+  unsupportedModels?: string[];
 }
 
 export const PLAN_DOC_URL: string;
@@ -53,5 +55,11 @@ export function loadPlanCache(options?: {
 
 export function savePlanCache(
   models: PlanModel[],
-  options?: { cachePath?: string; now?: number; source?: string }
+  options?: {
+    cachePath?: string;
+    now?: number;
+    source?: string;
+    verifiedModels?: string[];
+    unsupportedModels?: string[];
+  }
 ): void;

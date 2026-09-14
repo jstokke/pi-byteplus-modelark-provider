@@ -152,11 +152,16 @@ export const MODEL_HINTS = Object.freeze({
     contextWindow: 131072,
     maxTokens: 32768,
     reasoning: true,
-    vision: false,
+    // The Coding Plan subscription overview lists ByteDance-Seed-Code with
+    // "Multimodal visual understanding" (docs.byteplus.com/en/docs/ModelArk/1925114).
+    vision: true,
   },
   "glm-5.2": {
     name: "GLM-5.2",
-    contextWindow: 200000,
+    // Both the subscription overview ("Context window: 1024k") and the live
+    // catalog (token_limits.context_window = 1048576 for glm-5-2-260617)
+    // publish a 1M window; the earlier 200k guess compacted far too early.
+    contextWindow: 1048576,
     maxTokens: 131072,
     reasoning: true,
     vision: false,
@@ -174,7 +179,9 @@ export const MODEL_HINTS = Object.freeze({
   "kimi-k2.5": {
     name: "Kimi K2.5",
     contextWindow: 262144,
-    maxTokens: 65536,
+    // The subscription overview caps Kimi-K2.5 at 32k max output INCLUDING
+    // the chain of thought; 65536 risked an outright rejection.
+    maxTokens: 32768,
     reasoning: true,
     vision: true,
   },
@@ -199,6 +206,29 @@ export const MODEL_HINTS = Object.freeze({
     reasoning: true,
     vision: false,
   },
+  // The `-ga` successors of the V4 pair were added to the plan without the
+  // docs "supported models" list being updated (it still lags the console,
+  // which BytePlus now points at for availability). Verified live on
+  // 2026-09-11: chat/completions returns 200 for both ids, while platform-
+  // active models that are NOT on the plan (glm-5.3-flash, dola-seed-2.1-
+  // turbo, kimi-k2.6) return 404 UnsupportedModel — so these ids are plan-
+  // verified, not just platform-active. Context window matches the live
+  // catalog (1048576); the output cap keeps the same conservative reasoning
+  // ceiling as the non-GA entries.
+  "deepseek-v4-flash-ga": {
+    name: "DeepSeek V4 Flash GA",
+    contextWindow: 1048576,
+    maxTokens: 131072,
+    reasoning: true,
+    vision: false,
+  },
+  "deepseek-v4-pro-ga": {
+    name: "DeepSeek V4 Pro GA",
+    contextWindow: 1048576,
+    maxTokens: 131072,
+    reasoning: true,
+    vision: false,
+  },
 });
 
 /**
@@ -209,17 +239,26 @@ export const MODEL_HINTS = Object.freeze({
 export const SEED_CATALOG = Object.freeze(Object.keys(MODEL_HINTS));
 
 /**
- * Model ids BytePlus documents for the Coding Plan *outside* the
- * "The following models are supported:" bullet list, so the docs scrape does
- * not pick them up.
+ * Model ids the Coding Plan serves that the "The following models are
+ * supported:" bullet list does not contain, so the docs scrape does not pick
+ * them up. Appended to a successful scrape rather than replacing it.
  *
  * `ark-code-latest` is the plan's auto-router ("Auto mode is supported, and
  * the model is automatically selected using an intelligent algorithm"); the
  * same docs page quotes it as a value to put in a tool's config
- * (https://docs.byteplus.com/en/docs/ModelArk/2556056). It is appended to a
- * successful scrape rather than replacing it.
+ * (https://docs.byteplus.com/en/docs/ModelArk/2556056).
+ *
+ * The `-ga` DeepSeek variants are not documented anywhere in the list's
+ * place; they were verified against the Coding Plan endpoint (200 on
+ * `chat/completions`) after the docs list stopped tracking what the plan
+ * serves. BytePlus now points users at the console for availability, so ids
+ * verified live belong here alongside the documented one.
  */
-export const EXTRA_PLAN_MODELS = Object.freeze(["ark-code-latest"]);
+export const EXTRA_PLAN_MODELS = Object.freeze([
+  "ark-code-latest",
+  "deepseek-v4-flash-ga",
+  "deepseek-v4-pro-ga",
+]);
 
 export class DiscoveryError extends Error {
   constructor(message) {
@@ -436,6 +475,88 @@ export async function fetchCatalog({
   return parseCatalog(payload);
 }
 
+/**
+ * Probe whether a model is supported by the Coding Plan by sending a 1-token
+ * chat completion request to `${baseUrl}/chat/completions`.
+ *
+ * ModelArk's platform catalog lists models the Coding Plan does not serve,
+ * and BytePlus does not document a plan-specific model-listing endpoint.
+ * When a model is not enabled on the plan, the gateway returns
+ * HTTP 404 UnsupportedModel ("the requested model does not support the coding
+ * plan feature"). A 200 response confirms the model is supported.
+ *
+ * Returns true if supported, false otherwise. Never throws, never logs secrets.
+ */
+export async function probeModelSupport({
+  apiKey,
+  modelId,
+  baseUrl = OPENAI_BASE_URL,
+  fetchImpl = fetch,
+  timeoutMs = 4000,
+  signal,
+} = {}) {
+  if (typeof apiKey !== "string" || apiKey.trim() === "" || typeof modelId !== "string" || modelId.trim() === "") {
+    return false;
+  }
+
+  const normalizedBase = String(baseUrl).replace(/\/+$/, "");
+  const url = `${normalizedBase}/chat/completions`;
+  const scope = abortScope({ timeoutMs, signal });
+
+  try {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey.trim()}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model: modelId.trim(),
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+      }),
+      signal: scope.signal,
+    });
+
+    if (response.ok) return true;
+    if (response.status === 404) return false;
+
+    if (response.status === 400) {
+      try {
+        const data = await response.json();
+        if (data?.error?.code === "UnsupportedModel") return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  } finally {
+    scope.dispose();
+  }
+}
+
+/**
+ * Normalize a model id for cross-source matching: dots become hyphens and a
+ * trailing date-like platform version suffix (YYMMDD or YYYYMMDD) is dropped.
+ * The Coding Plan's docs publish dotted aliases (`glm-5.2`) while the live
+ * catalog lists versioned platform ids (`glm-5-2-260617`); this maps one onto
+ * the other so plan aliases can inherit live metadata. The suffix length is
+ * bounded so meaningful numeric components survive (`glm-5.2` stays
+ * `glm-5-2`, `gpt-oss-120b` keeps its size). Never used to substitute ids.
+ */
+export function normalizeModelId(id) {
+  return String(id ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, "-")
+    .replace(/-(?:\d{6}|\d{8})$/, "");
+}
+
 /** Validate and normalize a `GET /models` payload. Throws on malformed input. */
 export function parseCatalog(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -453,11 +574,33 @@ export function parseCatalog(payload) {
     if (typeof entry.id !== "string" || entry.id.trim() === "") {
       throw new DiscoveryError(`BytePlus ModelArk: model discovery failed: data[${index}] has no model id`);
     }
+    // BytePlus' live payload nests limits under `token_limits` and input
+    // modalities under `modalities.input_modalities`; the flat
+    // `context_length` / `max_tokens` shape is kept as a fallback so test
+    // fixtures and other OpenAI-style gates keep working. Fields that are
+    // absent are omitted rather than set to undefined.
+    const limits =
+      entry.token_limits && typeof entry.token_limits === "object" && !Array.isArray(entry.token_limits)
+        ? entry.token_limits
+        : {};
+    const inputModalities =
+      entry.modalities && typeof entry.modalities === "object" && !Array.isArray(entry.modalities)
+        ? entry.modalities.input_modalities
+        : undefined;
+    const contextLength = positiveIntOrUndefined(limits.context_window ?? entry.context_length ?? entry.context_window);
+    const maxTokens = positiveIntOrUndefined(limits.max_output_token_length ?? entry.max_tokens);
+    const vision = Array.isArray(inputModalities) ? inputModalities.includes("image") : undefined;
+    // A nonzero reasoning budget is direct evidence the model reasons.
+    const reasoning = positiveIntOrUndefined(limits.max_reasoning_token_length) !== undefined ? true : undefined;
+    const status = typeof entry.status === "string" && entry.status !== "" ? entry.status.toLowerCase() : undefined;
     models.push({
       id: entry.id.trim(),
       name: typeof entry.name === "string" && entry.name !== "" ? entry.name : undefined,
-      contextLength: positiveIntOrUndefined(entry.context_length ?? entry.context_window),
-      maxTokens: positiveIntOrUndefined(entry.max_tokens),
+      ...(contextLength !== undefined ? { contextLength } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      ...(vision !== undefined ? { vision } : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
+      ...(status !== undefined ? { status } : {}),
     });
   }
   if (models.length === 0) {
@@ -499,6 +642,20 @@ export function isChatModel(id) {
   const value = String(id ?? "").toLowerCase();
   if (value === "") return false;
   return !NON_CHAT_PATTERNS.some((pattern) => value.includes(pattern));
+}
+
+/**
+ * Is this live catalog entry usable — a chat model that is neither shutdown
+ * nor being retired? The platform catalog keeps retired entries listed
+ * (observed: `deepseek-r1-250120` status "Shutdown", `skylark-pro` status
+ * "Retiring"), and neither makes a sensible picker entry or metadata source.
+ * Entries without a `status` field (fixtures, other OpenAI-style gates) pass.
+ */
+export function isUsableLiveModel(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if (!isChatModel(entry.id)) return false;
+  const status = typeof entry.status === "string" ? entry.status.toLowerCase() : undefined;
+  return status !== "shutdown" && status !== "retiring";
 }
 
 /** Exact curated hint for a model id, or undefined for an unknown model. */
@@ -600,7 +757,7 @@ export function toPiModel(entry, overrides, defaultMaxTokens, meta) {
     fallback: fallbackMax,
   });
 
-  const vision = typeof entry.vision === "boolean" ? entry.vision : hint?.vision === true;
+  const vision = typeof hint?.vision === "boolean" ? hint.vision : entry.vision === true;
 
   return {
     id: entry.id, // BytePlus' exact model id is preserved verbatim.
@@ -633,22 +790,24 @@ export function toPiModels(entries, overrides, defaultMaxTokens, meta) {
  *   1. The plan list scraped from BytePlus' own docs — the only source that
  *      is actually scoped to the Coding Plan, and the reason new plan models
  *      show up without an extension update.
- *   2. The live `/models` catalog, filtered to chat models, when the docs
+ *   2. Dynamically verified live models discovered when an API key is set.
+ *   3. The live `/models` catalog, filtered to chat models, when the docs
  *      are unreachable. Metadata-only here: the platform catalog lists
  *      models the Coding Plan does not serve, so it is never merged into a
- *      successful plan list.
- *   3. The bundled seed catalog, so an authenticated user is never left with
+ *      successful plan list unless verified.
+ *   4. The bundled seed catalog, so an authenticated user is never left with
  *      an empty provider.
  *
  * `liveModels` is consulted for context/maxTokens on the plan path.
  */
-export function buildCatalog({ planModels, liveModels } = {}) {
+export function buildCatalog({ planModels, liveModels, verifiedLiveModels } = {}) {
   const plan = Array.isArray(planModels) ? planModels : [];
   const live = Array.isArray(liveModels) ? liveModels : [];
+  const verified = Array.isArray(verifiedLiveModels) ? verifiedLiveModels : [];
 
-  if (plan.length > 0) {
+  if (plan.length > 0 || verified.length > 0) {
     // Keep the published order, then append the ids BytePlus documents
-    // outside the list (deduplicated).
+    // outside the list (deduplicated), then dynamically verified live models.
     const ordered = [];
     const seen = new Set();
     for (const entry of plan) {
@@ -661,23 +820,40 @@ export function buildCatalog({ planModels, liveModels } = {}) {
       seen.add(id);
       ordered.push({ id });
     }
+    for (const entry of verified) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      ordered.push(entry);
+    }
 
-    const liveById = new Map(live.map((entry) => [entry.id, entry]));
+    // Metadata only: the platform catalog lists models the Coding Plan does
+    // not serve, so live ids are never merged into a successful plan list
+    // unless verified. Matching is by exact id first, then by normalized id,
+    // because the catalog publishes versioned platform ids (`glm-5-2-260617`)
+    // where the plan docs publish dotted aliases (`glm-5.2`).
+    const usable = live.filter(isUsableLiveModel);
+    const liveById = new Map(usable.map((entry) => [entry.id, entry]));
+    const liveByAlias = new Map(usable.map((entry) => [normalizeModelId(entry.id), entry]));
     return ordered.map((entry) => {
-      const fromLive = liveById.get(entry.id);
+      const fromLive = liveById.get(entry.id) ?? liveByAlias.get(normalizeModelId(entry.id));
       if (!fromLive) return entry;
+      // A curated name beats the catalog's lowercase display name, matching
+      // toPiModel's "curated hint first" precedence.
+      const hint = getModelHint(entry.id);
       return {
         ...entry,
-        name: entry.name ?? fromLive.name,
+        name: entry.name ?? hint?.name ?? fromLive.name,
         contextLength: entry.contextLength ?? fromLive.contextLength,
         maxTokens: entry.maxTokens ?? fromLive.maxTokens,
+        vision: typeof hint?.vision === "boolean" ? hint.vision : (entry.vision ?? fromLive.vision),
+        reasoning: entry.reasoning ?? fromLive.reasoning,
       };
     });
   }
 
-  if (live.length > 0) {
-    const chat = live.filter((entry) => isChatModel(entry.id));
-    if (chat.length > 0) return chat;
+  const usableLive = live.filter(isUsableLiveModel);
+  if (usableLive.length > 0) {
+    return usableLive;
   }
 
   return SEED_CATALOG.map((id) => ({ id }));

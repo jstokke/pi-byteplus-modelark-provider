@@ -48,14 +48,22 @@ discovery is layered, and each layer degrades into the next:
    so the extension parses the article markdown out of `window._ROUTER_DATA`
    rather than scraping the DOM. This is the layer that makes new plan models
    show up without a new extension release.
-2. **The live `/models` call** (secondary). Used to fill in context window and
-   output limits for models the docs list, and as a source of model ids when
-   the docs page cannot be parsed. When the docs scrape succeeded, the live
-   catalog is *only* consulted for metadata: ModelArk's catalog is a platform
-   catalog that also lists embedding, rerank, image/video/3D, speech and
-   translation models, and none of those belong in a Pi model picker. On the
-   fallback path those are filtered out by name.
-3. **The bundled seed catalog** (last resort). Ten known-good ids, so an
+2. **The live `/models` call and dynamic discovery** (secondary). Whenever an
+   API key is set, the extension fetches the live catalog to enrich context
+   window, output limits, image input and reasoning support.
+   BytePlus' live payload nests limits under `token_limits`, input
+   modalities under `modalities.input_modalities`, and lifecycle state under
+   `status`; all three are parsed (flat `context_length`/`max_tokens` fields
+   are accepted too, for other OpenAI-style gates). The catalog publishes
+   versioned platform ids (`glm-5-2-260617`) where the plan docs publish
+   dotted aliases (`glm-5.2`), so metadata matching normalizes both sides
+   (dots → hyphens, trailing date-like version suffix dropped). Furthermore,
+   any chat-capable platform models not documented on the docs page are
+   automatically probed against `chat/completions`: models BytePlus enables
+   plan-side (returning 200) are dynamically added to the catalog and cached,
+   while non-plan models (404 `UnsupportedModel`) and models marked
+   `Shutdown`/`Retiring` are filtered out.
+3. **The bundled seed catalog** (last resort). Thirteen known-good ids, so an
    authenticated user is never left with an empty provider after an offline
    first run or a docs restructure.
 
@@ -92,13 +100,15 @@ front — context window, output cap, vision, reasoning support — is curated i
 | `dola-seed-2.0-pro` | 262 144 | 131 072 | yes | yes |
 | `dola-seed-2.0-lite` | 262 144 | 32 768 | yes | yes |
 | `dola-seed-2.0-code` | 262 144 | 131 072 | yes | yes |
-| `bytedance-seed-code` | 131 072 | 32 768 | yes | no |
-| `glm-5.2` | 200 000 | 131 072 | yes | no |
+| `bytedance-seed-code` | 131 072 | 32 768 | yes | yes |
+| `glm-5.2` | 1 048 576 | 131 072 | yes | no |
 | `glm-5.1` | 200 000 | 131 072 | yes | no |
-| `kimi-k2.5` | 262 144 | 65 536 | yes | yes |
+| `kimi-k2.5` | 262 144 | 32 768 | yes | yes |
 | `gpt-oss-120b` | 131 072 | 32 768 | yes | no |
 | `deepseek-v4-flash` | 1 000 000 | 131 072 | yes | no |
 | `deepseek-v4-pro` | 1 000 000 | 131 072 | yes | no |
+| `deepseek-v4-flash-ga` | 1 048 576 | 131 072 | yes | no |
+| `deepseek-v4-pro-ga` | 1 048 576 | 131 072 | yes | no |
 
 Where the sources disagree, the table takes the **smaller** value:
 

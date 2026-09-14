@@ -26,6 +26,8 @@ export interface CatalogEntry {
   vision?: boolean;
   /** Set when the source knows about reasoning support. */
   reasoning?: boolean;
+  /** Lifecycle status from the live catalog ("active", "Shutdown", "Retiring"). */
+  status?: string;
 }
 
 /** `compat` block Pi applies to OpenAI-completions requests. */
@@ -127,6 +129,12 @@ export function parseCatalog(payload: unknown): CatalogEntry[];
 
 export function isChatModel(id: string): boolean;
 
+/** A chat-shaped live entry that is neither shutdown nor retiring. */
+export function isUsableLiveModel(entry: CatalogEntry | undefined | null): boolean;
+
+/** Map a plan alias onto platform-catalog id space (dots → hyphens, drop version suffix). */
+export function normalizeModelId(id: unknown): string;
+
 export function getModelHint(id: string): ModelHint | undefined;
 
 /** Best-effort reasoning capability + thinking-level map, or undefined when unknown. */
@@ -148,11 +156,21 @@ export function toPiModels(
   meta?: PiModelMeta
 ): PiModelDefinition[];
 
-/** Merge the available discovery sources into one ordered catalog. */
 export function buildCatalog(sources?: {
   planModels?: CatalogEntry[] | null;
   liveModels?: CatalogEntry[] | null;
+  verifiedLiveModels?: CatalogEntry[] | null;
 }): CatalogEntry[];
+
+/** Probe whether a model is supported on the Coding Plan (200 on chat/completions). */
+export function probeModelSupport(options: {
+  apiKey: string;
+  modelId: string;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}): Promise<boolean>;
 
 /** Validate a key; only an explicit 401/403 rejects it. Never logs the key. */
 export function validateApiKey(

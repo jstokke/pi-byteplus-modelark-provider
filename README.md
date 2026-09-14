@@ -97,8 +97,8 @@ or `byteplus/ark-code-latest` for the plan's auto-router.
 - **Uses the Coding Plan endpoint**, so requests consume your subscription
   instead of being billed on top of it.
 - **Discovers the plan's models** from the list BytePlus publishes, cached
-  24h, with the live `/models` catalog as a metadata source and fallback, and
-  ten known-good ids bundled as a last resort.
+  24h, automatically probes and discovers new live models whenever an API key
+  is set, and bundles thirteen known-good ids as a last resort.
 - **Knows each model's limits** — context window, output cap, vision and
   reasoning support — instead of shipping every model as "128k, text only".
 - **Sends reasoning correctly.** ModelArk accepts `reasoning_effort`
@@ -171,7 +171,16 @@ their provenance, and the troubleshooting messages are documented in
   it would just duplicate every entry in the picker.
 - The model list is parsed out of a public BytePlus documentation page, and
   the Coding Plan endpoint is undocumented. Either can change without notice;
-  `npm run smoke` is what reports drift.
+  `npm run smoke` is what reports drift. BytePlus no longer keeps that docs
+  list perfectly current — the Subscription overview points at the console
+  for availability — so brand-new plan models can take a release to land in
+  the curated list even though the docs scrape still works.
+- A model you **activated** in the ModelArk console is not necessarily served
+  by the Coding Plan. Activating a platform model (say `glm-5.3-flash`) does
+  not add it to the plan: the endpoint answers `404 UnsupportedModel` — "the
+  requested model does not support the coding plan feature" — until BytePlus
+  enables it plan-side. That is BytePlus' gating, not a bug in this
+  extension.
 
 ---
 
@@ -181,7 +190,7 @@ their provenance, and the troubleshooting messages are documented in
 git clone https://github.com/jstokke/pi-byteplus-modelark-provider.git
 cd pi-byteplus-modelark-provider
 npm install
-npm test          # 113 unit tests, fully mocked, ~0.6s
+npm test          # unit tests, fully mocked, ~0.7s
 npm run typecheck
 npm run smoke     # parses the live BytePlus docs page
 ```

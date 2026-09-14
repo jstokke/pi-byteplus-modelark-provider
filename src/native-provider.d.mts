@@ -49,6 +49,15 @@ export interface CreateProviderOptions {
     apiKey: string,
     options?: { url?: string; timeoutMs?: number; fetchImpl?: typeof fetch; signal?: AbortSignal }
   ) => Promise<ApiKeyVerdict>;
+  /** Override for tests. Defaults to core.mjs's probeModelSupport. */
+  probeModelSupportFn?: (options: {
+    apiKey: string;
+    modelId: string;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }) => Promise<boolean>;
   readStoredApiKeyFn?: (providerId: string, authPath?: string) => string | undefined;
   extraHeaders?: Record<string, string>;
   env?: Record<string, string | undefined>;

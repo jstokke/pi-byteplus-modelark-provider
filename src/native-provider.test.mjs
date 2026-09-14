@@ -63,6 +63,7 @@ function makeProvider({
   storedKey,
   env = BARE_ENV,
   calls = {},
+  probeModelSupportFn,
 } = {}) {
   return createBytePlusProvider({
     fetchPlanModelsFn: async () => {
@@ -78,12 +79,21 @@ function makeProvider({
       return liveModels;
     },
     loadPlanCacheFn: () => cache,
-    savePlanCacheFn: () => {
+    savePlanCacheFn: (models, meta) => {
       calls.save = (calls.save ?? 0) + 1;
+      calls.savedModels = models;
+      calls.savedMeta = meta;
     },
     loadModelOverridesFn: () => overrides ?? new Map(),
     validateApiKeyFn: validate ?? (async () => ({ ok: true, verified: true })),
     readStoredApiKeyFn: () => storedKey,
+    probeModelSupportFn:
+      probeModelSupportFn ??
+      (async (opts) => {
+        calls.probed = calls.probed ?? [];
+        calls.probed.push(opts?.modelId);
+        return false;
+      }),
     env,
   });
 }
@@ -363,7 +373,7 @@ test("refreshModels publishes the plan list and persists it", async () => {
 
   const models = provider.getModels();
   assert.deepEqual(models.map((m) => m.id), planIds("glm-5.2", "brand-new-plan-model"));
-  assert.equal(models[0].name, "GLM 5.2");
+  assert.equal(models[0].name, "GLM-5.2", "curated name wins over the live catalog's");
   assert.equal(models[0].provider, PROVIDER_ID);
   assert.equal(models[0].api, "openai-completions");
   assert.equal(models[0].baseUrl, OPENAI_BASE_URL);
@@ -384,11 +394,11 @@ test("refreshModels applies per-model overrides", async () => {
   const provider = makeProvider({
     storedKey: SECRET,
     planModels: [{ id: "glm-5.2" }],
-    overrides: new Map([["glm-5.2", { maxTokens: 250000, contextWindow: 400000 }]]),
+    overrides: new Map([["glm-5.2", { maxTokens: 250000, contextWindow: 2000000 }]]),
   });
   await provider.refreshModels(makeContext({}).context);
   assert.equal(provider.getModels()[0].maxTokens, 250000);
-  assert.equal(provider.getModels()[0].contextWindow, 400000);
+  assert.equal(provider.getModels()[0].contextWindow, 2000000);
 });
 
 test("refreshModels uses a fresh cache without refetching the docs", async () => {
@@ -540,6 +550,116 @@ test("refreshModels falls back to env keys for headless setups", async () => {
   const provider = makeProvider({ storedKey: undefined, env: { ARK_API_KEY: SECRET }, calls, planModels: [{ id: "glm-5.2" }] });
   await provider.refreshModels(makeContext({}).context);
   assert.equal(calls.liveApiKey, SECRET);
+});
+
+// ─── dynamic discovery & probing ─────────────────────────────────────────────
+
+test("refreshModels probes unlisted live chat models and includes verified ones in catalog", async () => {
+  const calls = {};
+  const provider = makeProvider({
+    storedKey: SECRET,
+    calls,
+    planModels: [{ id: "glm-5.2" }],
+    liveModels: [
+      { id: "glm-5.2" },
+      { id: "glm-5.3-flash", name: "glm-5.3-flash", contextLength: 128000, maxTokens: 8192 },
+      { id: "unsupported-chat-model", name: "unsupported-chat-model" },
+      { id: "doubao-embedding-large" },
+    ],
+    probeModelSupportFn: async ({ modelId, apiKey, baseUrl }) => {
+      calls.probed = calls.probed ?? [];
+      calls.probed.push({ modelId, apiKey, baseUrl });
+      return modelId === "glm-5.3-flash";
+    },
+  });
+
+  const { context } = makeContext({});
+  await provider.refreshModels(context);
+
+  assert.deepEqual(calls.probed.map((p) => p.modelId), ["glm-5.3-flash", "unsupported-chat-model"]);
+  assert.equal(calls.probed[0].apiKey, SECRET);
+  assert.equal(calls.probed[0].baseUrl, OPENAI_BASE_URL);
+
+  const modelIds = provider.getModels().map((m) => m.id);
+  assert.deepEqual(modelIds, [...planIds("glm-5.2"), "glm-5.3-flash"]);
+  assert.ok(!modelIds.includes("unsupported-chat-model"));
+
+  assert.equal(calls.save, 1);
+  assert.deepEqual(calls.savedMeta.verifiedModels, ["glm-5.3-flash"]);
+  assert.deepEqual(calls.savedMeta.unsupportedModels, ["unsupported-chat-model"]);
+});
+
+test("refreshModels does not re-probe models already cached as verified or unsupported", async () => {
+  const calls = {};
+  const cache = {
+    models: [{ id: "glm-5.2" }],
+    fetchedAt: Date.now(),
+    stale: false,
+    verifiedModels: ["previously-verified-model"],
+    unsupportedModels: ["previously-unsupported-model"],
+  };
+  const provider = makeProvider({
+    storedKey: SECRET,
+    calls,
+    cache,
+    liveModels: [
+      { id: "glm-5.2" },
+      { id: "previously-verified-model", contextLength: 64000 },
+      { id: "previously-unsupported-model" },
+    ],
+    probeModelSupportFn: async (opts) => {
+      calls.probed = calls.probed ?? [];
+      calls.probed.push(opts.modelId);
+      return true;
+    },
+  });
+
+  await provider.refreshModels(makeContext({}).context);
+
+  assert.equal(calls.probed, undefined);
+  assert.equal(calls.save, undefined);
+
+  const modelIds = provider.getModels().map((m) => m.id);
+  assert.deepEqual(modelIds, [...planIds("glm-5.2"), "previously-verified-model"]);
+  assert.ok(!modelIds.includes("previously-unsupported-model"));
+  assert.equal(provider.getModels().find((m) => m.id === "previously-verified-model")?.contextWindow, 64000);
+});
+
+test("BYTEPLUS_NO_PROBE skips dynamic model probing", async () => {
+  const calls = {};
+  const provider = makeProvider({
+    storedKey: SECRET,
+    calls,
+    env: { BYTEPLUS_NO_PROBE: "1" },
+    planModels: [{ id: "glm-5.2" }],
+    liveModels: [{ id: "unlisted-chat-model" }],
+    probeModelSupportFn: async (opts) => {
+      calls.probed = calls.probed ?? [];
+      calls.probed.push(opts.modelId);
+      return true;
+    },
+  });
+
+  await provider.refreshModels(makeContext({}).context);
+
+  assert.equal(calls.probed, undefined);
+  assert.ok(!provider.getModels().some((m) => m.id === "unlisted-chat-model"));
+});
+
+test("refreshModels handles probe errors gracefully", async () => {
+  const calls = {};
+  const provider = makeProvider({
+    storedKey: SECRET,
+    calls,
+    planModels: [{ id: "glm-5.2" }],
+    liveModels: [{ id: "failing-model" }],
+    probeModelSupportFn: async () => {
+      throw new Error("network probe failure");
+    },
+  });
+
+  await provider.refreshModels(makeContext({}).context);
+  assert.deepEqual(provider.getModels().map((m) => m.id), planIds("glm-5.2"));
 });
 
 // ─── secret hygiene ──────────────────────────────────────────────────────────
