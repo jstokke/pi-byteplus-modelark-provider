@@ -62,15 +62,21 @@ pi remove npm:pi-byteplus-modelark
 
 ### 2. Sign in
 
-Get an API key from the [BytePlus ARK console](https://console.byteplus.com/ark)
-(region `ap-southeast-1`), then inside Pi:
+Inside Pi:
 
 ```text
 /login byteplus
 ```
 
-Pi prompts with a masked secret input, checks the key, and saves it. You only
-do this once.
+Pi offers two options: **Sign in with BytePlus SSO (arkcli)** — approve the
+shown URL in any browser, paste the code back, and the extension imports
+the Coding Plan API key from your arkcli profile (requires the `arkcli` CLI)
+— or the classic **API-key** paste (`ark-…` from the
+[BytePlus ARK console](https://console.byteplus.com/ark), region
+`ap-southeast-1`). Either way the credential is saved and you only do this
+once. Already signed in with `arkcli auth login` in a terminal? Then there
+is nothing to do at all: the extension reuses that Coding Plan key
+automatically (`BYTEPLUS_NO_ARKCLI=1` opts out).
 
 ### 3. Pick a model
 
@@ -92,13 +98,17 @@ or `byteplus/ark-code-latest` for the plan's auto-router.
 | Display name | BytePlus ModelArk |
 | Endpoint | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` (Coding Plan) |
 | Wire | OpenAI Chat Completions |
-| Auth | Pi `/login` (masked prompt → `auth.json`), env vars as fallback |
+| Auth | Pi `/login`: SSO via `arkcli` or masked key prompt → `auth.json`; env vars as fallback |
 
 - **Uses the Coding Plan endpoint**, so requests consume your subscription
   instead of being billed on top of it.
 - **Discovers the plan's models** from the list BytePlus publishes, cached
   24h, automatically probes and discovers new live models whenever an API key
   is set, and bundles thirteen known-good ids as a last resort.
+- **Tells you when that catalog moves.** If BytePlus adds or retires a plan
+  model between sessions, one line at startup names what changed, so a
+  different `/model` list is explained rather than surprising. It stays quiet
+  on a first run and whenever discovery was degraded, so it never cries wolf.
 - **Knows each model's limits** — context window, output cap, vision and
   reasoning support — instead of shipping every model as "128k, text only".
 - **Sends reasoning correctly.** ModelArk accepts `reasoning_effort`

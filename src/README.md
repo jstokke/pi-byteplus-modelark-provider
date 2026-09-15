@@ -11,9 +11,22 @@ version.
 /login byteplus
 ```
 
-Pi prompts with a masked secret input, checks the key, and writes it to
-`~/.pi/agent/auth.json`. No environment variable is required, and there is
-nothing to edit by hand.
+Pi offers two sign-in options for the provider:
+
+- **Sign in with BytePlus SSO (arkcli)** — Pi shows a BytePlus authorization
+  URL (via `arkcli auth login --no-browser`), you approve it in any browser,
+  and paste the displayed code back into Pi. The extension then imports the
+  Coding Plan API key bound to the authenticated arkcli profile
+  (`arkcli profile apikey get`) and stores it as an OAuth credential, so a
+  later `arkcli auth apikey` re-selection or key rotation is picked up on
+  refresh without another browser round-trip. Requires the `arkcli` CLI on
+  PATH (override with `BYTEPLUS_ARKCLI_BIN`). If SSO succeeds but no default
+  key is selected, run `arkcli auth apikey` once in a terminal and retry.
+- **BytePlus ModelArk API key** — Pi prompts with a masked secret input,
+  checks the key, and writes it to `~/.pi/agent/auth.json`.
+
+No environment variable is required either way, and there is nothing to edit
+by hand.
 
 ## Which endpoint is used
 
@@ -77,6 +90,34 @@ when the docs scrape already produced a model list.
 One id is not in the docs list but is documented on the same page as a valid
 config value: `ark-code-latest`, the plan's auto-router. It is appended to a
 successful scrape and is present in the seed list.
+
+### Noticing when the catalog moves
+
+BytePlus adds and retires plan models on its own schedule, so the catalog a
+user had last session is not necessarily the one they have today. When the
+newly discovered list differs from the snapshot Pi persisted last time, the
+extension prints one line:
+
+```text
+BytePlus ModelArk: the Coding Plan model list changed since your last session — added glm-5.3, dola-seed-3.0 (+1 more); removed kimi-k2.5. BytePlus publishes these models; run /model to review.
+```
+
+The comparison is by exact id against the persisted snapshot, is reported at
+most once per session, and stays silent in three cases where a diff would be
+misleading rather than informative:
+
+- **No previous snapshot** — a first run has nothing to compare against, so
+  every id would look new.
+- **The docs scrape and the live catalog did not both answer** — a degraded
+  refresh legitimately yields fewer ids (the bundled seed list is shorter,
+  and a failed `/models` call drops the dynamically verified entries), and a
+  false "removed" notice is worse than no notice. This is the one diagnostic
+  in the extension that requires both sources to succeed.
+- **Only the offline restore ran** — republishing the persisted snapshot is
+  not a change.
+
+The notice lists at most six ids per side and elides the rest as `(+N more)`.
+No key, prompt, or endpoint ever appears in it.
 
 ### Checking the scrape against the live page
 
@@ -214,11 +255,19 @@ needed for a normal `/login` setup.
 | `BYTEPLUS_PLAN_DOC_URL` | Point the docs scrape at a mirror if BytePlus restructures the page. |
 | `BYTEPLUS_NO_ENRICHMENT` | `1` skips the docs scrape and uses the live catalog plus cache only. |
 | `BYTEPLUS_DEFAULT_MAX_TOKENS` | Global output cap for models with no curated value. |
+| `BYTEPLUS_ARKCLI_BIN` | Path to the `arkcli` binary for SSO sign-in (default: `arkcli` on PATH). |
+| `BYTEPLUS_NO_ARKCLI` | `1` disables automatic reuse of the arkcli-stored key (explicit SSO login still works). |
 | `PI_CODING_AGENT_DIR` | Pi's own setting; relocates `auth.json`, the cache and the overrides file. |
 
 Key resolution order for every request: the credential Pi resolved for this
 provider, then the stored `byteplus` entry in `auth.json`, then
-`BYTEPLUS_API_KEY`, then `ARK_API_KEY`. The key is never logged, printed, or
+`BYTEPLUS_API_KEY`, then `ARK_API_KEY`, and finally the arkcli-stored key
+— reused automatically when you have already run `arkcli auth login`, with
+no `/login` needed. The ambient fallback only accepts Coding Plan profiles
+(a pay-as-you-go key would authenticate but never consume the plan),
+caches successes for 5 minutes and failures for 60 seconds so the
+per-request path spawns at most one CLI process per window, and is
+disabled by `BYTEPLUS_NO_ARKCLI=1`. The key is never logged, printed, or
 included in an error message; there is a test that asserts that across every
 error path.
 
@@ -256,6 +305,13 @@ Every diagnostic is one line and none of them contains the key.
 - A model is missing → check `npm run smoke`; if it is not in the live list,
   BytePlus has not published it yet. If it *is* listed and Pi still does not
   show it, that is a bug.
+- `BytePlus ModelArk: SSO sign-in needs the `arkcli` CLI …`
+  → the SSO option was picked but `arkcli` is not installed or not on
+  PATH. Install it, set `BYTEPLUS_ARKCLI_BIN`, or use the API-key option.
+- `… SSO succeeded but no default ARK API key is selected. Run `arkcli auth apikey` …`
+  → SSO worked but the profile has no key selected. Run
+  `arkcli auth apikey` once in a terminal, then retry SSO — or paste the
+  key via the API-key option.
 - Requests fail with an API-format error → `OPENAI_COMPAT` in `core.mjs` is
   the only place that shapes the request.
 
@@ -268,7 +324,7 @@ npm run typecheck
 npm run smoke   # hits the live docs page; not part of npm test
 ```
 
-`src/core.mjs`, `src/enrich.mjs` and `src/native-provider.mjs` are plain ES
-module JavaScript so they load through Pi's jiti runtime *and* run under
+`src/core.mjs`, `src/enrich.mjs`, `src/native-provider.mjs` and
+`src/arkcli-oauth.mjs` are plain ES module JavaScript so they load through Pi's jiti runtime *and* run under
 `node --test` with no compile step. The `.d.mts` files beside them are hand
 written and are what `npm run typecheck` checks.
