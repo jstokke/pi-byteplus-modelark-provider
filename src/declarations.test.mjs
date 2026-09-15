@@ -18,7 +18,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const modules = ["core", "enrich", "native-provider"];
+const modules = ["core", "enrich", "native-provider", "arkcli-oauth"];
 
 /** Value exports (things that exist at runtime), as declared in a `.d.mts`. */
 function declaredValueExports(source) {
