@@ -6,6 +6,29 @@ Notes on what changed. Format loosely follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- BytePlus SSO sign-in via the `arkcli` CLI, exposed as Pi's `oauth` auth
+  method alongside the existing API-key option. `/login byteplus` now offers
+  "Sign in with BytePlus SSO (arkcli)": Pi shows the SSO authorization URL
+  (`arkcli auth login --no-browser`), the user pastes the browser code back
+  into Pi, and the extension imports the Coding Plan API key
+  (`arkcli profile apikey get`) as a refreshable OAuth credential (24h TTL;
+  rotation is picked up on refresh). When `arkcli` is missing, the SSO
+  option fails with install guidance and the API-key paste remains the
+  fallback. Adds `src/arkcli-oauth.mjs` (fully mocked tests, no secrets in
+  errors) and the `BYTEPLUS_ARKCLI_BIN` override for a non-PATH binary.
+- Automatic reuse of an already-authenticated `arkcli` profile: when no Pi
+  credential, stored key, or env var is configured, the apiKey method falls
+  back to the arkcli-stored key with no `/login` needed. Only Coding Plan
+  profile keys are accepted, results are cached (5 min success / 60 s
+  failure) so the per-request path spawns at most one CLI process, the
+  `/model` refresh shares the same fallback, and `BYTEPLUS_NO_ARKCLI=1`
+  opts out. The startup hint stays quiet while `arkcli` is on PATH.
+- A one-line startup notice when the Coding Plan catalog changed since the
+  user's last session, naming the model ids added and removed. It compares
+  the newly discovered list against the snapshot Pi persisted previously,
+  reports at most once per session, and stays silent on a first run or when
+  the scrape and live catalog did not both answer (a degraded refresh would
+  otherwise report false removals). Adds the pure `diffModelIds` helper.
 - Automatic dynamic discovery and live probing of new models whenever an API
   key is set. The extension queries the live `/models` catalog and probes any
   chat-capable models not documented in the docs list against
