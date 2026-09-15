@@ -59,6 +59,21 @@ export interface CreateProviderOptions {
     signal?: AbortSignal;
   }) => Promise<boolean>;
   readStoredApiKeyFn?: (providerId: string, authPath?: string) => string | undefined;
+  /** Override for tests. Defaults to arkcli-oauth.mjs's createArkCliOAuth. */
+  createOAuthFn?: (options: {
+    validateApiKeyFn?: CreateProviderOptions["validateApiKeyFn"];
+    runFn?: (args: string[], options?: { signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>;
+    extraHeaders?: Record<string, string>;
+    modelsUrl?: string;
+    env?: Record<string, string | undefined>;
+  }) => NonNullable<Provider["auth"]>["oauth"];
+  /** CLI runner override, forwarded to the OAuth factory and the ambient key source. Defaults to spawning `arkcli`. */
+  arkCliRunFn?: (args: string[], options?: { signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>;
+  /** Override for tests. Defaults to arkcli-oauth.mjs's createAmbientKeySource. */
+  createAmbientKeySourceFn?: (options: {
+    runFn?: (args: string[], options?: { signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>;
+    env?: Record<string, string | undefined>;
+  }) => (options?: { signal?: AbortSignal }) => Promise<string | undefined>;
   extraHeaders?: Record<string, string>;
   env?: Record<string, string | undefined>;
 }

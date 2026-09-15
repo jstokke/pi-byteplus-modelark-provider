@@ -2,13 +2,14 @@
  * Native Pi provider wiring for BytePlus ModelArk (Coding Plan).
  *
  * Produces a Provider object suitable for `pi.registerProvider()` that
- * participates in Pi's `/login` and `/logout` flows: masked secret input,
+ * participates in Pi's `/login` and `/logout` flows: masked secret input
+ * (`auth.apiKey`) or BytePlus SSO via the `arkcli` CLI (`auth.oauth`),
  * `auth.json` persistence, and a credential source label in the selector.
- * Pi handles all of that once we expose the standard `auth.apiKey` block, so
+ * Pi handles all of that once we expose the standard auth blocks, so
  * the user never has to export an environment variable.
  *
  * Pure module: every dependency is injectable so tests can mock HTTP, the
- * docs page, the cache, and auth.json. No top-level side effects.
+ * docs page, the cache, auth.json, and the CLI. No top-level side effects.
  *
  * Model discovery is intentionally layered (see core.buildCatalog):
  *   1. the Coding Plan's published model list (docs scrape, TTL cached)
@@ -41,6 +42,7 @@ import {
   loadPlanCache as defaultLoadPlanCache,
   savePlanCache as defaultSavePlanCache,
 } from "./enrich.mjs";
+import { createArkCliOAuth as defaultCreateArkCliOAuth, createAmbientKeySource as defaultCreateAmbientKeySource, defaultRunArkCli } from "./arkcli-oauth.mjs";
 
 /** Env vars that disable the docs scrape (see README). */
 export function isEnrichmentDisabled({ env = process.env } = {}) {
@@ -107,6 +109,9 @@ export function createBytePlusProvider(options = {}) {
     validateApiKeyFn = defaultValidateApiKey,
     probeModelSupportFn = defaultProbeModelSupport,
     readStoredApiKeyFn = readStoredApiKey,
+    createOAuthFn = defaultCreateArkCliOAuth,
+    arkCliRunFn,
+    createAmbientKeySourceFn = defaultCreateAmbientKeySource,
     extraHeaders,
     env = process.env,
   } = options;
@@ -126,6 +131,12 @@ export function createBytePlusProvider(options = {}) {
   /** Provider-scoped metadata stamped onto every model we publish. */
   const modelMeta = { provider: id, api, baseUrl: normalizedBaseUrl };
 
+  // CLI runner bound to the provider env (binary override + caller identity).
+  const cliRunFn = arkCliRunFn ?? ((args, opts = {}) => defaultRunArkCli(args, { ...opts, env }));
+  // Ambient arkcli key, cached per provider so check()/resolve()/refresh
+  // share one TTL window instead of spawning per call.
+  const getAmbientKey = createAmbientKeySourceFn({ runFn: cliRunFn, env });
+
   /**
    * Normalize a persisted model entry for this provider. Entries written by
    * another provider are dropped rather than cross-wired; entries written
@@ -144,7 +155,11 @@ export function createBytePlusProvider(options = {}) {
     };
   }
 
-  /** The `auth.apiKey` block Pi's `/login` flow drives. */
+  /**
+   * The `auth.apiKey` block Pi's `/login` flow drives. Resolution order:
+   * Pi credential, auth.json, env vars, then the ambient arkcli key
+   * (Coding Plan profiles only, cached, `BYTEPLUS_NO_ARKCLI=1` opts out).
+   */
   function buildAuthMethod() {
     return {
       name: `${name} API key`,
@@ -171,15 +186,24 @@ export function createBytePlusProvider(options = {}) {
         }
         return { type: "api_key", key: entered };
       },
-      async check({ ctx, credential }) {
+      async check({ ctx, credential, signal }) {
         void ctx;
         const key = resolveKey({ credential, readStoredApiKeyFn, env });
-        return key ? { type: "api_key", source: resolveSource({ credential, readStoredApiKeyFn, env }) } : undefined;
+        if (key) return { type: "api_key", source: resolveSource({ credential, readStoredApiKeyFn, env }) };
+        const ambient = await getAmbientKey({ signal });
+        return ambient ? { type: "api_key", source: "arkcli" } : undefined;
       },
-      async resolve({ ctx, credential }) {
+      async resolve({ ctx, credential, signal }) {
         void ctx;
         const key = resolveKey({ credential, readStoredApiKeyFn, env });
-        if (!key) return undefined;
+        if (!key) {
+          const ambient = await getAmbientKey({ signal });
+          if (!ambient) return undefined;
+          return {
+            auth: { apiKey: ambient, ...(extraHeaders ? { headers: extraHeaders } : {}) },
+            source: "arkcli",
+          };
+        }
         return {
           auth: { apiKey: key, ...(extraHeaders ? { headers: extraHeaders } : {}) },
           source: resolveSource({ credential, readStoredApiKeyFn, env }),
@@ -188,13 +212,29 @@ export function createBytePlusProvider(options = {}) {
     };
   }
 
+  /**
+   * The `auth.oauth` block Pi's `/login` flow drives as the SSO option.
+   * Built lazily per provider so tests can substitute the factory; the
+   * CLI is only spawned when the user actually picks SSO (login) or Pi
+   * refreshes a stored SSO credential — never on ambient requests.
+   */
+  function buildOAuthMethod() {
+    return createOAuthFn({
+      validateApiKeyFn,
+      runFn: cliRunFn,
+      ...(extraHeaders ? { extraHeaders } : {}),
+      modelsUrl,
+      env,
+    });
+  }
+
   return {
     id,
     name,
     baseUrl: normalizedBaseUrl,
     api,
     ...(extraHeaders ? { headers: extraHeaders } : {}),
-    auth: { apiKey: buildAuthMethod() },
+    auth: { apiKey: buildAuthMethod(), oauth: buildOAuthMethod() },
     getModels: () => models,
     // Native providers without a models.json overlay are used raw by Pi's
     // model runtime, so stream dispatch must live here. The compat streamers
@@ -221,8 +261,9 @@ export function createBytePlusProvider(options = {}) {
       if (context.signal.aborted) return;
 
       // Mirror check()/resolve() key resolution so headless env-var setups
-      // also get a live catalog on `/model` refresh.
-      const apiKey = resolveKey({ credential: context.credential, readStoredApiKeyFn, env });
+      // also get a live catalog on `/model` refresh. Ambient arkcli keys
+      // count too, so SSO-only users get a populated picker with no /login.
+      const apiKey = resolveKey({ credential: context.credential, readStoredApiKeyFn, env }) ?? (await getAmbientKey({ signal: context.signal }));
       if (!apiKey) return;
 
       const planDocUrl = getPlanDocUrl({ env });

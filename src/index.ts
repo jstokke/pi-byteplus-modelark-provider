@@ -9,11 +9,13 @@
  * the pay-as-you-go data plane (`…/api/v3`) separately, so requests sent to
  * the wrong base URL do not consume the subscription.
  *
- * Auth is handled by Pi's `/login` flow. The extension exposes an
- * `auth.apiKey` block, so Pi prompts with a masked secret input, checks the
- * key, persists it to `auth.json`, and shows the credential source in the
- * selector. `BYTEPLUS_API_KEY` (and `ARK_API_KEY`) remain supported as
- * headless fallbacks — they are a fallback, not the setup path.
+ * Auth is handled by Pi's `/login` flow. The extension exposes `auth.apiKey`
+ * (masked secret input, persisted to `auth.json`) and `auth.oauth`
+ * (BytePlus SSO via the `arkcli` CLI, importing the plan API key).
+ * `BYTEPLUS_API_KEY` (and `ARK_API_KEY`) remain supported as headless
+ * fallbacks — they are a fallback, not the setup path. When none of those
+ * is configured, an already-authenticated `arkcli` profile (Coding Plan
+ * only) is reused automatically; `BYTEPLUS_NO_ARKCLI=1` opts out.
  *
  * The model list is discovered, not hardcoded: the Coding Plan's published
  * model list is read from BytePlus' docs (TTL cached), the live `/models`
@@ -27,6 +29,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { OPENAI_BASE_URL, PROVIDER_ID, resolveApiKey } from "./core.mjs";
+import { findArkCliOnPath } from "./arkcli-oauth.mjs";
 import { createBytePlusProvider } from "./native-provider.mjs";
 
 export default function (pi: ExtensionAPI) {
@@ -52,11 +55,12 @@ export default function (pi: ExtensionAPI) {
 
   // Best-effort startup hint. `/login` is the primary setup path, so log once
   // here rather than leaving first-time users with an empty `/model` picker.
-  // The check is cheap (two env lookups plus one auth.json read) and only
-  // fires when no source has a key at all.
-  if (resolveApiKey() === undefined) {
+  // The check is cheap (two env lookups, one auth.json read, one PATH scan)
+  // and only fires when no source has a key at all. An installed `arkcli`
+  // suppresses the hint: its stored Coding Plan key is reused automatically.
+  if (resolveApiKey() === undefined && findArkCliOnPath() === undefined) {
     console.error(
-      "BytePlus ModelArk: no API key found. Run `/login byteplus` in Pi (the key is saved to ~/.pi/agent/auth.json), or set BYTEPLUS_API_KEY before launching."
+      "BytePlus ModelArk: no API key found. Run `/login byteplus` in Pi (SSO via arkcli, or a pasted key saved to ~/.pi/agent/auth.json), or set BYTEPLUS_API_KEY before launching."
     );
   }
 }

@@ -64,6 +64,8 @@ function makeProvider({
   env = BARE_ENV,
   calls = {},
   probeModelSupportFn,
+  ambientKey,
+  ambientCalls = {},
 } = {}) {
   return createBytePlusProvider({
     fetchPlanModelsFn: async () => {
@@ -87,6 +89,10 @@ function makeProvider({
     loadModelOverridesFn: () => overrides ?? new Map(),
     validateApiKeyFn: validate ?? (async () => ({ ok: true, verified: true })),
     readStoredApiKeyFn: () => storedKey,
+    createAmbientKeySourceFn: () => async () => {
+      ambientCalls.spawns = (ambientCalls.spawns ?? 0) + 1;
+      return ambientKey;
+    },
     probeModelSupportFn:
       probeModelSupportFn ??
       (async (opts) => {
@@ -681,4 +687,129 @@ test("no runtime error path includes the API key", async () => {
       return true;
     }
   );
+});
+
+// ─── auth: SSO via arkcli ────────────────────────────────────────────────────
+
+test("the provider exposes the SSO oauth block alongside the API-key block", () => {
+  const provider = makeProvider();
+  assert.equal(typeof provider.auth.apiKey.login, "function");
+  assert.equal(provider.auth.oauth.name, "BytePlus ModelArk (SSO)");
+  assert.equal(provider.auth.oauth.loginLabel, "Sign in with BytePlus SSO (arkcli)");
+  assert.equal(provider.auth.oauth.isSubscription, true);
+  assert.equal(typeof provider.auth.oauth.login, "function");
+  assert.equal(typeof provider.auth.oauth.refresh, "function");
+  assert.equal(typeof provider.auth.oauth.toAuth, "function");
+});
+
+test("the OAuth factory is injectable and receives the models URL", () => {
+  const seen = {};
+  const fakeOAuth = { name: "fake", login: async () => ({}), refresh: async () => ({}), toAuth: async () => ({}) };
+  const provider = createBytePlusProvider({
+    baseUrl: "https://mirror.test/api/coding/v3",
+    createOAuthFn: (options) => {
+      seen.options = options;
+      return fakeOAuth;
+    },
+    fetchCatalogFn: async () => [],
+    loadPlanCacheFn: () => null,
+    loadModelOverridesFn: () => new Map(),
+    readStoredApiKeyFn: () => undefined,
+    env: BARE_ENV,
+  });
+  assert.equal(provider.auth.oauth, fakeOAuth);
+  assert.equal(seen.options.modelsUrl, "https://mirror.test/api/coding/v3/models");
+  assert.equal(typeof seen.options.validateApiKeyFn, "function");
+});
+
+test("extraHeaders flow into the OAuth request auth", async () => {
+  const captured = {};
+  const provider = createBytePlusProvider({
+    extraHeaders: { "x-test": "1" },
+    createOAuthFn: (options) => {
+      captured.options = options;
+      return { name: "fake" };
+    },
+    fetchCatalogFn: async () => [],
+    loadPlanCacheFn: () => null,
+    loadModelOverridesFn: () => new Map(),
+    readStoredApiKeyFn: () => undefined,
+    env: BARE_ENV,
+  });
+  assert.deepEqual(captured.options.extraHeaders, { "x-test": "1" });
+  assert.equal(provider.auth.oauth.name, "fake");
+});
+
+// ─── auth: ambient arkcli key ────────────────────────────────────────────────
+
+test("resolve falls back to the ambient arkcli key with source arkcli", async () => {
+  const ambientCalls = {};
+  const provider = makeProvider({ ambientKey: SECRET, ambientCalls });
+  const resolved = await provider.auth.apiKey.resolve({ ctx: {}, credential: undefined });
+  assert.deepEqual(resolved, { auth: { apiKey: SECRET }, source: "arkcli" });
+  assert.equal(ambientCalls.spawns, 1);
+});
+
+test("explicit sources win over ambient without consulting it", async () => {
+  const ambientCalls = {};
+  const provider = makeProvider({
+    storedKey: "from-auth-json",
+    env: { BYTEPLUS_API_KEY: "from-env" },
+    ambientKey: SECRET,
+    ambientCalls,
+  });
+  const resolved = await provider.auth.apiKey.resolve({ ctx: {}, credential: undefined });
+  assert.equal(resolved.auth.apiKey, "from-auth-json");
+  assert.equal(resolved.source, "stored credential");
+  assert.equal(ambientCalls.spawns ?? 0, 0);
+});
+
+test("ambient extraHeaders are attached to the resolved auth", async () => {
+  const provider = createBytePlusProvider({
+    extraHeaders: { "x-test": "1" },
+    createAmbientKeySourceFn: () => async () => SECRET,
+    fetchCatalogFn: async () => [],
+    loadPlanCacheFn: () => null,
+    loadModelOverridesFn: () => new Map(),
+    readStoredApiKeyFn: () => undefined,
+    env: BARE_ENV,
+  });
+  const resolved = await provider.auth.apiKey.resolve({ ctx: {}, credential: undefined });
+  assert.deepEqual(resolved.auth, { apiKey: SECRET, headers: { "x-test": "1" } });
+  assert.equal(resolved.source, "arkcli");
+});
+
+test("check reports the ambient key, and undefined when absent", async () => {
+  const withKey = makeProvider({ ambientKey: SECRET });
+  assert.deepEqual(await withKey.auth.apiKey.check({ ctx: {}, credential: undefined }), {
+    type: "api_key",
+    source: "arkcli",
+  });
+  const withoutKey = makeProvider({});
+  assert.equal(await withoutKey.auth.apiKey.check({ ctx: {}, credential: undefined }), undefined);
+  assert.equal(await withoutKey.auth.apiKey.resolve({ ctx: {}, credential: undefined }), undefined);
+});
+
+test("BYTEPLUS_NO_ARKCLI=1 disables the ambient fallback", async () => {
+  const provider = createBytePlusProvider({
+    fetchCatalogFn: async () => [],
+    loadPlanCacheFn: () => null,
+    loadModelOverridesFn: () => new Map(),
+    readStoredApiKeyFn: () => undefined,
+    arkCliRunFn: async () => {
+      throw new Error("must not spawn");
+    },
+    env: { BYTEPLUS_NO_ARKCLI: "1" },
+  });
+  assert.equal(await provider.auth.apiKey.resolve({ ctx: {}, credential: undefined }), undefined);
+  assert.equal(await provider.auth.apiKey.check({ ctx: {}, credential: undefined }), undefined);
+});
+
+test("refreshModels uses the ambient key for the live catalog", async () => {
+  const calls = {};
+  const provider = makeProvider({ planModels: [{ id: "glm-5.2" }], ambientKey: SECRET, calls });
+  const { context } = makeContext({});
+  await provider.refreshModels(context);
+  assert.equal(calls.liveApiKey, SECRET);
+  assert.ok(provider.getModels().some((m) => m.id === "glm-5.2"));
 });
