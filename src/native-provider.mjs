@@ -27,6 +27,7 @@ import {
   OPENAI_BASE_URL,
   PROVIDER_ID,
   buildCatalog,
+  diffModelIds,
   fetchCatalog as defaultFetchCatalog,
   isUsableLiveModel,
   loadModelOverrides as defaultLoadModelOverrides,
@@ -47,6 +48,32 @@ import { createArkCliOAuth as defaultCreateArkCliOAuth, createAmbientKeySource a
 /** Env vars that disable the docs scrape (see README). */
 export function isEnrichmentDisabled({ env = process.env } = {}) {
   return env.BYTEPLUS_NO_ENRICHMENT === "1";
+}
+
+/** Cap on how many ids a single change notice lists before eliding. */
+const CATALOG_CHANGE_LIST_LIMIT = 6;
+
+/** Join ids as "a, b, c", eliding the tail once the list gets long. */
+function formatIdList(ids) {
+  const shown = ids.slice(0, CATALOG_CHANGE_LIST_LIMIT);
+  const rest = ids.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} (+${rest} more)` : shown.join(", ");
+}
+
+/**
+ * One-line, secret-free notice that the Coding Plan catalog moved since the
+ * user's last session. BytePlus adds and retires plan models on its own
+ * schedule, so this is informational — it is never a claim about a broken
+ * install.
+ */
+export function formatCatalogChange(added, removed) {
+  const parts = [];
+  if (added.length > 0) parts.push(`added ${formatIdList(added)}`);
+  if (removed.length > 0) parts.push(`removed ${formatIdList(removed)}`);
+  return (
+    `BytePlus ModelArk: the Coding Plan model list changed since your last session — ${parts.join("; ")}. ` +
+    "BytePlus publishes these models; run /model to review."
+  );
 }
 
 /**
@@ -127,6 +154,10 @@ export function createBytePlusProvider(options = {}) {
   // Empty until the first refreshModels() restores a persisted snapshot or
   // publishes a live one.
   let models = [];
+
+  // The catalog-change notice is emitted at most once per provider instance;
+  // refreshModels runs again whenever the model list is refreshed.
+  let catalogChangeReported = false;
 
   /** Provider-scoped metadata stamped onto every model we publish. */
   const modelMeta = { provider: id, api, baseUrl: normalizedBaseUrl };
@@ -249,12 +280,12 @@ export function createBytePlusProvider(options = {}) {
       // persisted catalog keeps `/model` populated even when the network
       // phase is skipped or fails.
       const storedModels = Array.isArray(context.stored?.models) ? context.stored.models : [];
-      if (storedModels.length > 0) {
-        const restored = storedModels.map(normalizeStoredModel).filter((entry) => entry !== undefined);
-        if (restored.length > 0) {
-          const ok = await context.publish({ update: () => { models = restored; } });
-          if (!ok) return;
-        }
+      // The persisted snapshot doubles as the baseline for the change notice:
+      // it is what this extension published the last time it ran.
+      const restored = storedModels.map(normalizeStoredModel).filter((entry) => entry !== undefined);
+      if (restored.length > 0) {
+        const ok = await context.publish({ update: () => { models = restored; } });
+        if (!ok) return;
       }
 
       if (!context.allowNetwork) return;
@@ -407,6 +438,24 @@ export function createBytePlusProvider(options = {}) {
       await context.publish({ persist: { models: filtered, checkedAt: Date.now() } });
 
       models = filtered;
+
+      // Tell a returning user when the catalog moved. Reported only when the
+      // plan-scoped list and the live catalog both answered: a degraded
+      // refresh legitimately yields fewer ids, and a false "removed" notice
+      // would be worse than staying quiet. A first run has no baseline.
+      if (
+        !catalogChangeReported &&
+        restored.length > 0 &&
+        Array.isArray(planModels) &&
+        planModels.length > 0 &&
+        liveResult.status === "fulfilled"
+      ) {
+        catalogChangeReported = true;
+        const change = diffModelIds(restored, filtered);
+        if (change.added.length > 0 || change.removed.length > 0) {
+          console.error(formatCatalogChange(change.added, change.removed));
+        }
+      }
     },
   };
 }

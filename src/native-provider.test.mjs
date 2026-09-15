@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { EXTRA_PLAN_MODELS, OPENAI_BASE_URL, PROVIDER_ID, SEED_CATALOG } from "./core.mjs";
-import { createBytePlusProvider, isEnrichmentDisabled, knownModelCount, resolveKey, resolveSource } from "./native-provider.mjs";
+import { createBytePlusProvider, formatCatalogChange, isEnrichmentDisabled, knownModelCount, resolveKey, resolveSource } from "./native-provider.mjs";
 
 const SECRET = "ark-secret-do-not-log-4b7c";
 const BARE_ENV = {};
@@ -812,4 +812,113 @@ test("refreshModels uses the ambient key for the live catalog", async () => {
   await provider.refreshModels(context);
   assert.equal(calls.liveApiKey, SECRET);
   assert.ok(provider.getModels().some((m) => m.id === "glm-5.2"));
+});
+
+// ─── catalog-change notice ───────────────────────────────────────────────────
+
+/** A persisted snapshot shaped the way this extension writes it. */
+const storedFrom = (...ids) => ({ models: planIds(...ids).map((id) => ({ id })) });
+
+test("formatCatalogChange lists added and removed ids in one line", () => {
+  const both = formatCatalogChange(["new-model"], ["old-model"]);
+  assert.match(both, /added new-model/);
+  assert.match(both, /removed old-model/);
+  assert.match(both, /BytePlus ModelArk:/);
+  assert.ok(!both.includes("\n"), "the notice stays a single line");
+});
+
+test("formatCatalogChange covers one-sided changes and elides long lists", () => {
+  const addedOnly = formatCatalogChange(["a"], []);
+  assert.match(addedOnly, /added a/);
+  assert.ok(!addedOnly.includes("removed"));
+
+  const removedOnly = formatCatalogChange([], ["b"]);
+  assert.match(removedOnly, /removed b/);
+  assert.ok(!removedOnly.includes("added"));
+
+  const many = formatCatalogChange(["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"], []);
+  assert.match(many, /added a1, a2, a3, a4, a5, a6 \(\+2 more\)/);
+});
+
+test("refreshModels reports a catalog that gained and lost models", async () => {
+  const provider = makeProvider({
+    storedKey: SECRET,
+    planModels: [{ id: "glm-5.2" }, { id: "new-model" }],
+    liveModels: [],
+  });
+  const { context } = makeContext({ stored: storedFrom("glm-5.2", "retired-model") });
+  const logs = await captureErrors(() => provider.refreshModels(context));
+
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /added new-model/);
+  assert.match(logs[0], /removed retired-model/);
+  assert.ok(!logs[0].includes(SECRET));
+});
+
+test("refreshModels stays quiet when the catalog is unchanged", async () => {
+  const provider = makeProvider({ storedKey: SECRET, planModels: [{ id: "glm-5.2" }], liveModels: [] });
+  const { context } = makeContext({ stored: storedFrom("glm-5.2") });
+  const logs = await captureErrors(() => provider.refreshModels(context));
+  assert.deepEqual(logs, []);
+});
+
+test("refreshModels does not announce a catalog on the very first run", async () => {
+  const provider = makeProvider({ storedKey: SECRET, planModels: planIds("glm-5.2").map((id) => ({ id })), liveModels: [] });
+  const { context } = makeContext({});
+  const logs = await captureErrors(() => provider.refreshModels(context));
+  assert.deepEqual(logs, [], "no baseline means nothing to compare against");
+});
+
+test("refreshModels suppresses the notice when the live catalog failed", async () => {
+  // A failed /models call drops dynamically verified ids from the published
+  // list, so a diff would report false removals.
+  const provider = makeProvider({
+    storedKey: SECRET,
+    planModels: [{ id: "glm-5.2" }],
+    liveError: new Error("models endpoint down"),
+  });
+  const { context } = makeContext({ stored: storedFrom("glm-5.2", "verified-model") });
+  const logs = await captureErrors(() => provider.refreshModels(context));
+  assert.deepEqual(logs, []);
+});
+
+test("refreshModels suppresses the notice when it fell back to the seed list", async () => {
+  const provider = makeProvider({
+    storedKey: SECRET,
+    planError: new Error("docs down"),
+    liveError: new Error("models endpoint down"),
+  });
+  const { context } = makeContext({ stored: storedFrom("glm-5.2") });
+  const logs = await captureErrors(() => provider.refreshModels(context));
+  assert.ok(!logs.some((line) => /model list changed/.test(line)));
+  assert.ok(logs.some((line) => /bundled model list/.test(line)), "the degraded path still reports itself");
+});
+
+test("refreshModels announces a catalog change only once per session", async () => {
+  const provider = makeProvider({
+    storedKey: SECRET,
+    planModels: [{ id: "glm-5.2" }, { id: "new-model" }],
+    liveModels: [],
+  });
+  const { context } = makeContext({ stored: storedFrom("glm-5.2") });
+  const logs = await captureErrors(async () => {
+    await provider.refreshModels(context);
+    await provider.refreshModels(context);
+  });
+  assert.equal(logs.filter((line) => /model list changed/.test(line)).length, 1);
+});
+
+test("the persisted snapshot is republished offline without a change notice", async () => {
+  const provider = createBytePlusProvider({
+    fetchCatalogFn: async () => [],
+    fetchPlanModelsFn: async () => [],
+    loadPlanCacheFn: () => null,
+    loadModelOverridesFn: () => new Map(),
+    readStoredApiKeyFn: () => SECRET,
+    env: BARE_ENV,
+  });
+  const { context } = makeContext({ allowNetwork: false, stored: storedFrom("glm-5.2") });
+  const logs = await captureErrors(() => provider.refreshModels(context));
+  assert.deepEqual(logs, [], "the offline restore is not a catalog change");
+  assert.deepEqual(provider.getModels().map((m) => m.id), planIds("glm-5.2"));
 });

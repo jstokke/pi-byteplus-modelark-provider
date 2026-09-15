@@ -90,6 +90,9 @@ export function resolveKey(input?: ResolveKeyInput): string | undefined;
 
 export function resolveSource(input?: ResolveKeyInput): string;
 
+/** One-line, secret-free notice for a catalog whose model ids changed. */
+export function formatCatalogChange(added: readonly string[], removed: readonly string[]): string;
+
 export function createBytePlusProvider(options?: CreateProviderOptions): Provider;
 
 /** Number of curated models in the bundled hints table. */
