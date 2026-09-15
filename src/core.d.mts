@@ -162,6 +162,21 @@ export function buildCatalog(sources?: {
   verifiedLiveModels?: CatalogEntry[] | null;
 }): CatalogEntry[];
 
+/** Model ids that appeared or disappeared between two catalog snapshots. */
+export interface ModelIdDiff {
+  added: string[];
+  removed: string[];
+}
+
+/**
+ * Diff two model collections (bare id strings or `{ id }` entries) by exact
+ * id. Order-insensitive; duplicates collapse into first-seen order.
+ */
+export function diffModelIds(
+  previous: ReadonlyArray<string | { id?: string }> | undefined,
+  next: ReadonlyArray<string | { id?: string }> | undefined
+): ModelIdDiff;
+
 /** Probe whether a model is supported on the Coding Plan (200 on chat/completions). */
 export function probeModelSupport(options: {
   apiKey: string;

@@ -860,6 +860,50 @@ export function buildCatalog({ planModels, liveModels, verifiedLiveModels } = {}
 }
 
 /**
+ * Normalize a list of model ids or catalog entries to bare id strings.
+ * Blank/absent ids are dropped; order is preserved.
+ */
+function toIdList(entries) {
+  const ids = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const id = typeof entry === "string" ? entry : entry && typeof entry.id === "string" ? entry.id : undefined;
+    if (id !== undefined && id !== "") ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Compare two model collections and report which ids appeared and which
+ * disappeared. Accepts bare id strings or catalog entries (`{ id }`).
+ *
+ * Comparison is exact and order-insensitive; duplicates collapse and the
+ * result keeps first-seen order. This is how a returning user is told that
+ * the Coding Plan catalog moved since their last session — BytePlus adds
+ * and retires plan models on its own schedule, so this is expected drift
+ * rather than an extension change.
+ */
+export function diffModelIds(previous, next) {
+  const before = [];
+  const beforeSeen = new Set();
+  for (const id of toIdList(previous)) {
+    if (beforeSeen.has(id)) continue;
+    beforeSeen.add(id);
+    before.push(id);
+  }
+
+  const afterSeen = new Set();
+  const added = [];
+  for (const id of toIdList(next)) {
+    if (afterSeen.has(id)) continue;
+    afterSeen.add(id);
+    if (!beforeSeen.has(id)) added.push(id);
+  }
+
+  const removed = before.filter((id) => !afterSeen.has(id));
+  return { added, removed };
+}
+
+/**
  * Validate an API key without ever printing it.
  *
  * `/models` is the cheapest authenticated call available, but BytePlus does

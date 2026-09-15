@@ -27,6 +27,7 @@ import {
   buildCatalog,
   defaultAuthPath,
   defaultOverridesPath,
+  diffModelIds,
   fetchCatalog,
   getDefaultMaxTokens,
   getModelHint,
@@ -831,4 +832,32 @@ test("no error path ever includes the API key", async () => {
     loadModelOverrides({ path: "/nope.json", fsImpl: { readFileSync: () => "{ bad" } });
   });
   for (const line of logs) assert.ok(!line.includes(SECRET), line);
+});
+
+// ─── diffModelIds ────────────────────────────────────────────────────────────
+
+test("diffModelIds reports additions and removals, order-insensitively", () => {
+  assert.deepEqual(diffModelIds(["a", "b", "c"], ["c", "b", "d"]), { added: ["d"], removed: ["a"] });
+  assert.deepEqual(diffModelIds(["a", "b"], ["a", "b"]), { added: [], removed: [] });
+  assert.deepEqual(diffModelIds([], ["a"]), { added: ["a"], removed: [] });
+  assert.deepEqual(diffModelIds(["a"], []), { added: [], removed: ["a"] });
+});
+
+test("diffModelIds accepts catalog entries and collapses duplicates", () => {
+  assert.deepEqual(diffModelIds([{ id: "a" }, { id: "a" }, { id: "b" }], [{ id: "b" }, { id: "b" }, { id: "c" }]), {
+    added: ["c"],
+    removed: ["a"],
+  });
+  assert.deepEqual(diffModelIds([{ id: "a" }, { id: "" }, {}], [{ id: "a" }]), { added: [], removed: [] });
+});
+
+test("diffModelIds tolerates missing and malformed input", () => {
+  assert.deepEqual(diffModelIds(undefined, undefined), { added: [], removed: [] });
+  assert.deepEqual(diffModelIds(null, [{ id: "x" }]), { added: ["x"], removed: [] });
+  assert.deepEqual(diffModelIds("not-an-array", undefined), { added: [], removed: [] });
+  assert.deepEqual(diffModelIds([1, null, { id: 5 }], []), { added: [], removed: [] });
+});
+
+test("diffModelIds preserves first-seen order for both sides", () => {
+  assert.deepEqual(diffModelIds(["z", "y"], ["y2", "z2"]), { added: ["y2", "z2"], removed: ["z", "y"] });
 });
